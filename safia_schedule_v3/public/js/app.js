@@ -95,6 +95,7 @@ let state = loadState();
 let currentPage = "schedule";
 let currentCategory = "Общий";
 let staffFilter = { category: "Все", shift: "Все", day: "Все" };
+let dayoffFilter = { category: "Все", shift: "Все", search: "" };
 
 function parseEmployees() {
   return defaultEmployees.split("\n").map((line, index) => {
@@ -264,7 +265,73 @@ function renderOff(day){
 }
 function renderDayoffs(){
   const days = getWeekDays(state.currentWeek);
-  document.getElementById("dayoffs").innerHTML = `<div class="card"><h3>Поставить выходной</h3><div class="grid grid2"><div><b>Сотрудники</b><div class="checks">${state.employees.filter(e=>e.active).map(e=>`<label><input type="checkbox" class="offEmp" value="${e.id}"> ${shortName(e.name)} <span class="muted">${e.position}</span></label>`).join("")}</div></div><div><b>Даты</b><div class="checks">${days.map((d,i)=>`<label><input type="checkbox" class="offDay" value="${dateKey(d)}"> ${daysShort[i]} ${formatDate(d)}</label>`).join("")}</div></div></div><br><button onclick="massDayoff()">Поставить выходной</button></div>`;
+  const filteredEmployees = state.employees.filter(e => {
+    const byCategory = dayoffFilter.category === "Все" || e.position === dayoffFilter.category;
+    const byShift = dayoffFilter.shift === "Все" || e.defaultShift === dayoffFilter.shift;
+    const bySearch = !dayoffFilter.search || e.name.toLowerCase().includes(dayoffFilter.search.toLowerCase());
+    return e.active && byCategory && byShift && bySearch;
+  });
+
+  document.getElementById("dayoffs").innerHTML = `
+    <div class="card">
+      <h3>Фильтр выходных</h3>
+
+      <div class="filters">
+        <select onchange="dayoffFilter.category=this.value; render()">
+          <option>Все</option>
+          ${editableCategories.map(c=>`<option ${dayoffFilter.category===c?'selected':''}>${c}</option>`).join("")}
+        </select>
+
+        <select onchange="dayoffFilter.shift=this.value; render()">
+          <option>Все</option>
+          ${Object.keys(shiftTemplates).map(s=>`<option ${dayoffFilter.shift===s?'selected':''}>${s}</option>`).join("")}
+        </select>
+
+        <input 
+          placeholder="Поиск сотрудника..." 
+          value="${dayoffFilter.search}" 
+          oninput="dayoffFilter.search=this.value; render()"
+        >
+
+        <button class="secondary" onclick="selectFilteredEmployeesForDayoff()">Выбрать всех</button>
+        <button class="secondary" onclick="clearDayoffEmployeeSelection()">Очистить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Поставить выходной</h3>
+
+      <div class="grid grid2">
+        <div>
+          <b>Сотрудники (${filteredEmployees.length})</b>
+          <div class="checks">
+            ${filteredEmployees.map(e=>`
+              <label>
+                <input type="checkbox" class="offEmp" value="${e.id}">
+                ${shortName(e.name)}
+                <span class="muted">${e.position} · ${e.defaultShift}</span>
+              </label>
+            `).join("") || `<p class="muted">Сотрудники не найдены</p>`}
+          </div>
+        </div>
+
+        <div>
+          <b>Даты</b>
+          <div class="checks">
+            ${days.map((d,i)=>`
+              <label>
+                <input type="checkbox" class="offDay" value="${dateKey(d)}">
+                ${daysShort[i]} ${formatDate(d)}
+              </label>
+            `).join("")}
+          </div>
+        </div>
+      </div>
+
+      <br>
+      <button onclick="massDayoff()">Поставить выходной</button>
+    </div>
+  `;
 }
 function renderEmployees(){
   document.getElementById("employees").innerHTML = `<div class="card"><h3>Добавить сотрудника</h3><div class="filters"><input id="newName" placeholder="ФИО"><select id="newPos">${editableCategories.map(c=>`<option>${c}</option>`)}</select><select id="newShift">${Object.keys(shiftTemplates).map(s=>`<option>${s}</option>`)}</select><button onclick="addEmployee()">Добавить</button></div></div><div class="list">${state.employees.map(e=>`<div class="employeeRow"><b>${e.name}</b><span>${e.position}</span><span>${e.defaultShift}</span><span>${e.skills.map(s=>`<i class="pill">${s}</i>`).join("")}</span><button class="danger" onclick="removeEmployee('${e.id}')">Удалить</button></div>`).join("")}</div>`;
@@ -368,6 +435,13 @@ function exportExcel(){
 }
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
 
+function selectFilteredEmployeesForDayoff(){
+  document.querySelectorAll(".offEmp").forEach(x => x.checked = true);
+}
+
+function clearDayoffEmployeeSelection(){
+  document.querySelectorAll(".offEmp").forEach(x => x.checked = false);
+}
 document.querySelectorAll(".nav").forEach(n=>n.onclick=()=>{currentPage=n.dataset.page; render();});
 document.getElementById("roleSelect").value=state.role;
 document.getElementById("roleSelect").onchange=e=>{state.role=e.target.value; render();};
