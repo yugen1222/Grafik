@@ -184,8 +184,17 @@ function render(){
   document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
   document.getElementById(currentPage).classList.add("active");
   document.querySelectorAll(".nav").forEach(n=>n.classList.toggle("active", n.dataset.page===currentPage));
-  document.getElementById("pageTitle").textContent = ({dashboard:"Помощник",schedule:"График недели",dayoffs:"Выходные",employees:"Сотрудники",staffing:"Штатка",history:"История"})[currentPage];
+  document.getElementById("pageTitle").textContent = ({
+    dashboard:"Помощник",
+    schedule:"График недели",
+    dayoffs:"Выходные",
+    employees:"Сотрудники",
+    skills:"Навыки",
+    staffing:"Штатка",
+    history:"История"
+  })[currentPage];
   document.getElementById("weekTitle").textContent = `Неделя ${weekLabel(state.currentWeek)}`;
+  renderSkills();
   renderWeekSelect();
   renderDashboard(); renderSchedule(); renderDayoffs(); renderEmployees(); renderStaffing(); renderHistory();
   saveState();
@@ -197,6 +206,74 @@ function renderWeekSelect(){
 }
 function statusClass(diff){ return diff<0?"low":diff>0?"high":"ok"; }
 function statusText(diff){ return diff<0?`Не хватает ${Math.abs(diff)}`:diff>0?`Лишние ${diff}`:"Норма"; }
+
+function renderSkills(){
+  const skills = editableCategories;
+
+  document.getElementById("skills").innerHTML = `
+    <div class="card">
+      <h3>Навыки и универсальность</h3>
+      <p class="muted">Здесь можно отметить, кто может работать в другой категории.</p>
+
+      <div class="list">
+        ${state.employees.map(e => `
+          <div class="employeeRow">
+            <b>${shortName(e.name)}</b>
+            <span>${e.position}</span>
+            <span>${e.defaultShift}</span>
+
+            <span>
+              ${skills.map(skill => `
+                <label class="pill">
+                  <input 
+                    type="checkbox" 
+                    ${e.skills.includes(skill) ? "checked" : ""}
+                    onchange="toggleSkill('${e.id}','${skill}',this.checked)"
+                  >
+                  ${skill}
+                </label>
+              `).join("")}
+            </span>
+
+            <label class="pill">
+              <input 
+                type="checkbox" 
+                ${e.universal ? "checked" : ""}
+                onchange="toggleUniversal('${e.id}',this.checked)"
+              >
+              Универсал
+            </label>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function toggleSkill(empId, skill, checked){
+  const e = employee(empId);
+  if(!e) return;
+
+  if(checked && !e.skills.includes(skill)){
+    e.skills.push(skill);
+  }
+
+  if(!checked){
+    e.skills = e.skills.filter(s => s !== skill);
+  }
+
+  saveState();
+  render();
+}
+
+function toggleUniversal(empId, checked){
+  const e = employee(empId);
+  if(!e) return;
+
+  e.universal = checked;
+  saveState();
+  render();
+}
 
 function renderDashboard(){
   const p=problems();
