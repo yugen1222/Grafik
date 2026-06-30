@@ -506,9 +506,57 @@ function createNextWeek(){
 }
 function prevWeek(){ const s=new Date(state.currentWeek); s.setDate(s.getDate()-7); const key=dateKey(s); if(!state.weeks[key]) createWeek(key); state.currentWeek=key; render(); }
 function exportExcel(){
-  const rows=[["Дата","День","Категория","ФИО","Смена","Статус"]];
-  getWeekDays(state.currentWeek).forEach((d,i)=> dayItems(dateKey(d)).forEach(it=> rows.push([dateKey(d),daysShort[i],it.category||"",employee(it.employeeId)?.name||"",it.shift||"",it.status==="off"?"Выходной":"Работает"])));
-  const wb=XLSX.utils.book_new(); const ws=XLSX.utils.aoa_to_sheet(rows); XLSX.utils.book_append_sheet(wb,ws,"График"); XLSX.writeFile(wb,`grafik_${weekLabel(state.currentWeek)}.xlsx`);
+  const days = getWeekDays(state.currentWeek);
+  const rows = [];
+
+  rows.push([`Филиал Сергели — график ${weekLabel(state.currentWeek)}`]);
+  rows.push([]);
+  rows.push(["Категория", "ФИО", "Основная смена", ...days.map((d,i)=>`${daysShort[i]} ${formatDate(d)}`)]);
+
+  editableCategories.forEach(cat => {
+    const employees = state.employees.filter(e => e.active && e.position === cat);
+
+    rows.push([]);
+    rows.push([cat]);
+
+    employees.forEach(emp => {
+      const row = [cat, emp.name, emp.defaultShift];
+
+      days.forEach(d => {
+        const day = dateKey(d);
+        const items = dayItems(day).filter(i => i.employeeId === emp.id);
+
+        if(!items.length){
+          row.push("");
+        } else {
+          const off = items.find(i => i.status === "off");
+          if(off) row.push("Выходной");
+          else row.push(items.map(i => i.shift || emp.defaultShift).join(", "));
+        }
+      });
+
+      rows.push(row);
+    });
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  ws["!cols"] = [
+    { wch: 18 },
+    { wch: 38 },
+    { wch: 15 },
+    { wch: 15 },
+    { wch: 15 },
+    { wch: 15 },
+    { wch: 15 },
+    { wch: 15 },
+    { wch: 15 },
+    { wch: 15 }
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, "График");
+  XLSX.writeFile(wb, `grafik_${weekLabel(state.currentWeek)}.xlsx`);
 }
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
 
