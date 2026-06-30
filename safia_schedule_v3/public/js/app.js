@@ -151,7 +151,19 @@ function loadState(){
   window.state = s;
   return s;
 }
-function saveState(){ localStorage.setItem("safiaScheduleV3", JSON.stringify(state)); }
+let isRemoteUpdate = false;
+
+function saveState(){
+  localStorage.setItem("safiaScheduleV4", JSON.stringify(state));
+
+  if (window.db && !isRemoteUpdate) {
+    window.db.ref(window.SAFIA_PATH).set({
+      state,
+      updatedAt: Date.now(),
+      updatedBy: window.CLIENT_ID
+    });
+  }
+}
 function ensureWeek(){ if(!state.weeks[state.currentWeek]) createWeek(state.currentWeek); saveState(); }
 ensureWeek();
 
@@ -796,3 +808,19 @@ document.getElementById("nextWeekBtn").onclick=createNextWeek;
 document.getElementById("prevWeekBtn").onclick=prevWeek;
 document.getElementById("excelBtn").onclick=exportExcel;
 render();
+if (window.db) {
+  window.db.ref(window.SAFIA_PATH).on("value", snapshot => {
+    const data = snapshot.val();
+
+    if (!data || !data.state) return;
+    if (data.updatedBy === window.CLIENT_ID) return;
+
+    isRemoteUpdate = true;
+    state = data.state;
+    localStorage.setItem("safiaScheduleV4", JSON.stringify(state));
+    render();
+    isRemoteUpdate = false;
+
+    toast("Данные обновились с другого устройства");
+  });
+}
