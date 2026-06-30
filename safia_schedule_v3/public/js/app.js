@@ -510,17 +510,34 @@ function exportExcel(){
   const dayKeys = days.map(dateKey);
 
   function timeSortValue(time){
-    const tpl = shiftTemplates[time];
-    return tpl ? tpl.start : 99;
+    return shiftTemplates[time]?.start ?? 99;
   }
 
-  function cellFor(emp, day){
+  function getWorkForCategory(emp, day, cat){
+    return dayItems(day).filter(i =>
+      i.employeeId === emp.id &&
+      i.status === "work" &&
+      i.category === cat
+    );
+  }
+
+  function hasAssignmentInCategory(emp, cat){
+    return dayKeys.some(day =>
+      dayItems(day).some(i =>
+        i.employeeId === emp.id &&
+        i.status === "work" &&
+        i.category === cat
+      )
+    );
+  }
+
+  function cellFor(emp, day, cat){
     const items = dayItems(day).filter(i => i.employeeId === emp.id);
     const off = items.find(i => i.status === "off");
 
     if(off) return `<td class="off"></td>`;
 
-    const works = items.filter(i => i.status === "work");
+    const works = getWorkForCategory(emp, day, cat);
 
     if(!works.length) return `<td></td>`;
 
@@ -530,20 +547,32 @@ function exportExcel(){
       i.shift !== emp.defaultShift
     );
 
-    return `<td class="${changed ? "changed" : ""}">
-      ${works.map(i => i.shift || emp.defaultShift).join("<br>")}
-    </td>`;
+    return `
+      <td class="${changed ? "changed" : ""}">
+        ${shortName(emp.name)}
+      </td>
+    `;
+  }
+
+  function rowTime(emp, cat){
+    const assigned = dayKeys
+      .flatMap(day => getWorkForCategory(emp, day, cat))
+      .find(i => i.shift);
+
+    return assigned?.shift || emp.defaultShift;
   }
 
   function tableBlock(cat){
     const rows = state.employees
-      .filter(emp => emp.active && (
-        emp.position === cat ||
-        emp.skills.includes(cat) ||
-        emp.universal
-      ))
+      .filter(emp =>
+        emp.active &&
+        (
+          emp.position === cat ||
+          hasAssignmentInCategory(emp, cat)
+        )
+      )
       .sort((a,b) => {
-        const t = timeSortValue(a.defaultShift) - timeSortValue(b.defaultShift);
+        const t = timeSortValue(rowTime(a, cat)) - timeSortValue(rowTime(b, cat));
         if(t !== 0) return t;
         return a.name.localeCompare(b.name, "ru");
       });
@@ -570,10 +599,10 @@ function exportExcel(){
 
         ${rows.map(emp => `
           <tr>
-            <td class="position">${emp.position}</td>
-            <td class="time">${emp.defaultShift}</td>
+            <td class="position">${cat}</td>
+            <td class="time">${rowTime(emp, cat)}</td>
             <td class="name">${shortName(emp.name)}</td>
-            ${dayKeys.map(day => cellFor(emp, day)).join("")}
+            ${dayKeys.map(day => cellFor(emp, day, cat)).join("")}
           </tr>
         `).join("")}
       </table>
@@ -586,9 +615,7 @@ function exportExcel(){
     <head>
       <meta charset="UTF-8">
       <style>
-        body {
-          font-family: "Times New Roman", serif;
-        }
+        body { font-family: "Times New Roman", serif; }
 
         table {
           border-collapse: collapse;
@@ -611,7 +638,6 @@ function exportExcel(){
           font-size: 18px;
           font-weight: bold;
           background: #ffffff;
-          text-align: center;
         }
 
         .dates th {
@@ -632,7 +658,7 @@ function exportExcel(){
         }
 
         .name {
-          width: 160px;
+          width: 170px;
           font-weight: bold;
         }
 
@@ -658,10 +684,7 @@ function exportExcel(){
     html += tableBlock(cat);
   });
 
-  html += `
-    </body>
-    </html>
-  `;
+  html += `</body></html>`;
 
   const blob = new Blob([html], {
     type: "application/vnd.ms-excel;charset=utf-8"
