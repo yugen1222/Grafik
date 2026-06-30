@@ -507,56 +507,149 @@ function createNextWeek(){
 function prevWeek(){ const s=new Date(state.currentWeek); s.setDate(s.getDate()-7); const key=dateKey(s); if(!state.weeks[key]) createWeek(key); state.currentWeek=key; render(); }
 function exportExcel(){
   const days = getWeekDays(state.currentWeek);
-  const rows = [];
+  const dayKeys = days.map(dateKey);
 
-  rows.push([`Филиал Сергели — график ${weekLabel(state.currentWeek)}`]);
-  rows.push([]);
-  rows.push(["Категория", "ФИО", "Основная смена", ...days.map((d,i)=>`${daysShort[i]} ${formatDate(d)}`)]);
+  function cellFor(emp, day, cat, shiftName){
+    const items = dayItems(day).filter(i => i.employeeId === emp.id);
+    const off = items.find(i => i.status === "off");
+
+    if(off){
+      return `<td class="off"></td>`;
+    }
+
+    const work = items.find(i =>
+      i.status === "work" &&
+      i.category === cat &&
+      coversShift(i, shiftName) > 0
+    );
+
+    if(!work){
+      return `<td></td>`;
+    }
+
+    const changed =
+      work.status === "changed" ||
+      emp.position !== work.category ||
+      !emp.skills.includes(work.category);
+
+    return `<td class="${changed ? "changed" : ""}">${shortName(emp.name)}</td>`;
+  }
+
+  function tableBlock(cat, shiftName){
+    const rows = state.employees.filter(emp => {
+      return emp.active && (
+        emp.position === cat ||
+        emp.skills.includes(cat) ||
+        emp.universal
+      );
+    });
+
+    return `
+      <table>
+        <tr class="top">
+          <td colspan="8">Филиал Сергели — ${cat} — ${shiftName}</td>
+        </tr>
+
+        <tr class="dates">
+          <th>Должность</th>
+          ${days.map(d => `<th>${formatDate(d)}</th>`).join("")}
+        </tr>
+
+        <tr class="dates">
+          <th></th>
+          ${daysShort.map(d => `<th>${d}</th>`).join("")}
+        </tr>
+
+        ${rows.map(emp => `
+          <tr>
+            <td class="position">${cat}</td>
+            ${dayKeys.map(day => cellFor(emp, day, cat, shiftName)).join("")}
+          </tr>
+        `).join("")}
+      </table>
+      <br>
+    `;
+  }
+
+  let html = `
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body {
+          font-family: "Times New Roman", serif;
+        }
+
+        table {
+          border-collapse: collapse;
+          width: 100%;
+          margin-bottom: 22px;
+          page-break-after: always;
+        }
+
+        th, td {
+          border: 1px solid #333;
+          text-align: center;
+          vertical-align: middle;
+          height: 28px;
+          font-size: 12px;
+          padding: 4px;
+        }
+
+        .top td {
+          height: 48px;
+          font-size: 18px;
+          font-weight: bold;
+          text-align: center;
+          background: #ffffff;
+        }
+
+        .dates th {
+          background: #92d050;
+          font-weight: bold;
+        }
+
+        .position {
+          background: #92d050;
+          font-weight: bold;
+          width: 160px;
+        }
+
+        .off {
+          background: #ff0000;
+          color: #ff0000;
+        }
+
+        .changed {
+          background: #ffff00;
+          color: #000000;
+        }
+      </style>
+    </head>
+    <body>
+      <h2 style="text-align:center;">График ${weekLabel(state.currentWeek)}</h2>
+      <p style="text-align:right;font-weight:bold;">Аюпов А __________</p>
+  `;
 
   editableCategories.forEach(cat => {
-    const employees = state.employees.filter(e => e.active && e.position === cat);
-
-    rows.push([]);
-    rows.push([cat]);
-
-    employees.forEach(emp => {
-      const row = [cat, emp.name, emp.defaultShift];
-
-      days.forEach(d => {
-        const day = dateKey(d);
-        const items = dayItems(day).filter(i => i.employeeId === emp.id);
-
-        if(!items.length){
-          row.push("");
-        } else {
-          const off = items.find(i => i.status === "off");
-          if(off) row.push("Выходной");
-          else row.push(items.map(i => i.shift || emp.defaultShift).join(", "));
-        }
-      });
-
-      rows.push(row);
+    Object.keys(staffingBlocks).forEach(shiftName => {
+      html += tableBlock(cat, shiftName);
     });
   });
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(rows);
+  html += `
+    </body>
+    </html>
+  `;
 
-  ws["!cols"] = [
-    { wch: 18 },
-    { wch: 38 },
-    { wch: 15 },
-    { wch: 15 },
-    { wch: 15 },
-    { wch: 15 },
-    { wch: 15 },
-    { wch: 15 },
-    { wch: 15 },
-    { wch: 15 }
-  ];
+  const blob = new Blob([html], {
+    type: "application/vnd.ms-excel;charset=utf-8"
+  });
 
-  XLSX.utils.book_append_sheet(wb, ws, "График");
-  XLSX.writeFile(wb, `grafik_${weekLabel(state.currentWeek)}.xlsx`);
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `grafik_print_${weekLabel(state.currentWeek)}.xls`;
+  link.click();
 }
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
 
