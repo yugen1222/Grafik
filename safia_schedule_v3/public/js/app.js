@@ -163,6 +163,41 @@ function coversShift(item, blockName){
   return overlap(tpl, block);
 }
 function itemHours(item){ return shiftTemplates[item.shift]?.hours || 0; }
+function hasTimeConflict(day, empId, newShift, ignoreItem = null){
+  const newTpl = shiftTemplates[newShift];
+  if(!newTpl) return false;
+
+  return dayItems(day).some(i => {
+    if(i.status !== "work") return false;
+    if(i.employeeId !== empId) return false;
+    if(ignoreItem && i === ignoreItem) return false;
+
+    const oldTpl = shiftTemplates[i.shift];
+    if(!oldTpl) return false;
+
+    return overlap(oldTpl, newTpl) > 0;
+  });
+}
+
+function removeAssignment(day, empId, category, shift){
+  const oldLength = dayItems(day).length;
+
+  state.weeks[state.currentWeek].schedule[day] = dayItems(day).filter(i =>
+    !(i.employeeId === empId &&
+      i.category === category &&
+      i.shift === shift &&
+      i.status === "work")
+  );
+
+  if(dayItems(day).length !== oldLength){
+    state.weeks[state.currentWeek].history.push(
+      `${shortName(employee(empId)?.name)}: удалено назначение ${day}`
+    );
+    closeDrawer();
+    render();
+    toast("Назначение удалено");
+  }
+}
 function dayItems(day){ return state.weeks[state.currentWeek].schedule[day] || []; }
 function isDayOff(day, empId){ return dayItems(day).some(i=>i.employeeId===empId && i.status==="off"); }
 function coverage(day, category, shiftName){
@@ -445,15 +480,43 @@ function openEmployeeDrawer(day, empId, category='', shift=''){
         <select id="drawerShift">${Object.keys(shiftTemplates).map(s=>`<option ${s===shift?'selected':''}>${s}</option>`).join('')}</select><br><br>
         <button onclick="changeFromDrawer('${day}','${empId}','${category}','${shift}')">Изменить смену</button>
         <button class="secondary" onclick="makeOffFromDrawer('${day}','${empId}')">Поставить выходной</button>
+        <button class="danger" onclick="removeAssignment('${day}','${empId}','${category}','${shift}')">Удалить это назначение</button>
       </div>
     </div>`;
   drawer.classList.add('open');
 }
 function closeDrawer(){document.getElementById('drawer').classList.remove('open')}
 function changeFromDrawer(day, empId, category, oldShift){
-  const newShift=document.getElementById('drawerShift').value;
-  const item=dayItems(day).find(i=>i.employeeId===empId && i.category===category && i.shift===oldShift && i.status==='work') || dayItems(day).find(i=>i.employeeId===empId && i.status==='work');
-  if(item){item.shift=newShift; item.status='changed'; state.weeks[state.currentWeek].history.push(`${shortName(employee(empId).name)}: смена ${newShift}`); closeDrawer(); render(); toast('Смена изменена');}
+  const newShift = document.getElementById("drawerShift").value;
+
+  const item =
+    dayItems(day).find(i =>
+      i.employeeId === empId &&
+      i.category === category &&
+      i.shift === oldShift &&
+      i.status === "work"
+    ) ||
+    dayItems(day).find(i =>
+      i.employeeId === empId &&
+      i.status === "work"
+    );
+
+  if(!item) return toast("Назначение не найдено");
+
+  if(hasTimeConflict(day, empId, newShift, item)){
+    return toast("Нельзя: сотрудник уже работает в это время");
+  }
+
+  item.shift = newShift;
+  item.status = "changed";
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(employee(empId).name)}: смена изменена на ${newShift}`
+  );
+
+  closeDrawer();
+  render();
+  toast("Смена изменена");
 }
 function makeOffFromDrawer(day, empId){
   state.weeks[state.currentWeek].schedule[day]=dayItems(day).filter(i=>i.employeeId!==empId);
@@ -462,11 +525,32 @@ function makeOffFromDrawer(day, empId){
   closeDrawer(); render(); toast('Выходной поставлен');
 }
 function quickAdd(day){
-  const name=prompt('Введите часть имени сотрудника:'); if(!name) return;
-  const emp=state.employees.find(e=>e.name.toLowerCase().includes(name.toLowerCase()));
-  if(!emp) return toast('Сотрудник не найден');
-  state.weeks[state.currentWeek].schedule[day].push({employeeId:emp.id,category:emp.position,shift:emp.defaultShift,status:'work'});
-  render(); toast('Добавлено');
+  const name = prompt("Введите часть имени сотрудника:");
+  if(!name) return;
+
+  const emp = state.employees.find(e =>
+    e.name.toLowerCase().includes(name.toLowerCase())
+  );
+
+  if(!emp) return toast("Сотрудник не найден");
+
+  if(hasTimeConflict(day, emp.id, emp.defaultShift)){
+    return toast("Этот сотрудник уже работает в это время");
+  }
+
+  state.weeks[state.currentWeek].schedule[day].push({
+    employeeId: emp.id,
+    category: emp.position,
+    shift: emp.defaultShift,
+    status: "work"
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(emp.name)}: добавлен ${day}`
+  );
+
+  render();
+  toast("Добавлено");
 }
 function setCategory(c){ currentCategory=c; render(); }
 function massDayoff(){
