@@ -1,3 +1,8 @@
+function shortName(fullName) {
+  if (!fullName) return "";
+  const parts = fullName.trim().split(/\s+/);
+  return parts.slice(0, 2).join(" ");
+}
 const shiftTemplates = {
   "08:00-16:00": { start: 8, end: 16, hours: 8 },
   "16:00-23:00": { start: 16, end: 23, hours: 7 },
