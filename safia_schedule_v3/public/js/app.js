@@ -143,7 +143,17 @@ function createWeek(startKey, copyFromKey=null){
       state.employees.filter(e=>e.active).forEach(e => schedule[day].push({ employeeId:e.id, category:e.position, shift:e.defaultShift, status:"work" }));
     });
   }
-  state.weeks[startKey] = { startKey, staffing: blankStaffing(), schedule, history: [`Создана неделя ${weekLabel(startKey)}`] };
+  const staffing = {};
+  days.forEach(day => {
+    staffing[day] = blankStaffing();
+  });
+
+  state.weeks[startKey] = {
+    startKey,
+    staffing,
+    schedule,
+    history: [`Создана неделя ${weekLabel(startKey)}`]
+  };
 }
 
 function loadState(){
@@ -234,14 +244,35 @@ function isDayOff(day, empId){ return dayItems(day).some(i=>i.employeeId===empId
 function coverage(day, category, shiftName){
   return dayItems(day).filter(i=>isWorkItem(i) && i.category===category && coversShift(i, shiftName)>0).length;
 }
-function need(category, shiftName){ return state.weeks[state.currentWeek].staffing[category]?.[shiftName] ?? 0; }
+function need(day, category, shiftName){
+  return state.weeks[state.currentWeek].staffing?.[day]?.[category]?.[shiftName] ?? 0;
+}
 function problems(){
   const list=[]; const days=getWeekDays(state.currentWeek).map(dateKey);
   days.forEach(day=>editableCategories.forEach(cat=>Object.keys(staffingBlocks).forEach(sh=>{
-    const n=need(cat,sh), a=coverage(day,cat,sh), diff=a-n;
+    const n=need(day, cat, sh), a=coverage(day,cat,sh), diff=a-n;
     if(diff!==0) list.push({day,cat,sh,n,a,diff});
   })));
   return list;
+}
+
+function dayOffSuggestions(day, category, shiftName){
+  const items = dayItems(day).filter(i =>
+    i.status === "work" &&
+    i.category === category &&
+    coversShift(i, shiftName) > 0
+  );
+
+  return items
+    .map(i => {
+      const e = employee(i.employeeId);
+      return {
+        emp: e,
+        item: i,
+        score: e.serviceScore ?? 50
+      };
+    })
+    .sort((a,b) => a.score - b.score);
 }
 
 function render(){
@@ -267,7 +298,20 @@ function statusText(diff){ return diff<0?`Не хватает ${Math.abs(diff)}`
 function renderDashboard(){
   const p=problems();
   const critical=p.filter(x=>x.diff<0).slice(0,8);
-  const extra=p.filter(x=>x.diff>0).slice(0,8);
+  ${extra.map(x => {
+    const sug = dayOffSuggestions(x.day, x.cat, x.sh).slice(0, x.diff);
+
+    return `
+      <div class="infoBox">
+        <b>🟡 ${x.day} · ${x.cat} · ${x.sh}</b><br>
+        <span class="muted">Лишние: ${x.diff}. Нужно ${x.n}, стоит ${x.a}</span><br>
+        <b>Можно дать выходной:</b><br>
+        ${sug.map(s => `
+          • ${shortName(s.emp?.name)} — балл сервиса: ${s.score}
+        `).join("<br>")}
+      </div>
+    `;
+  }).join("") || "<p>Лишних нет ✅</p>"}
   const suggestions = critical.map(x=>`<div class="infoBox"><b>🔴 ${x.day} · ${x.cat} · ${x.sh}</b><br><span class="muted">Не хватает ${Math.abs(x.diff)}. Проверь универсалов или сотрудников с частичным покрытием смены.</span></div>`).join("") || `<div class="infoBox">✅ Критичных нехваток нет</div>`;
   document.getElementById("dashboard").innerHTML = `
     <div class="quickStats">
@@ -304,7 +348,7 @@ function renderDayColumn(day, label, display){
   const cats = currentCategory==="Общий" ? editableCategories : [currentCategory];
   const mini = cats.slice(0,4).map(cat=>{
     const actual = Object.keys(staffingBlocks).reduce((a,sh)=>a+coverage(day,cat,sh),0);
-    const needed = Object.keys(staffingBlocks).reduce((a,sh)=>a+need(cat,sh),0);
+    const needed = Object.keys(staffingBlocks).reduce((a,sh)=>a+need(day, cat, sh),0);
     const diff = actual-needed;
     return `<div class="miniLine"><span>${cat}</span><b class="${statusClass(diff)} badge">${actual}/${needed}</b></div>`;
   }).join("");
@@ -315,7 +359,7 @@ function renderShift(day, sh){
   const cats = currentCategory==="Общий" ? editableCategories : [currentCategory];
   let html="";
   cats.forEach(cat=>{
-    const actual=coverage(day,cat,sh), n=need(cat,sh), diff=actual-n;
+    const actual=coverage(day,cat,sh), n=need(day, cat, sh), diff=actual-n;
     const items=dayItems(day).filter(i=>isWorkItem(i) && i.category===cat && coversShift(i,sh)>0);
     html += `<div class="shiftBoxTitle"><span>${cat} · ${sh}</span><span class="badge ${statusClass(diff)}">${actual}/${n}</span></div>`;
     html += items.map(i=>{
@@ -379,7 +423,7 @@ function renderStaffing(){
   const rows=[];
   days.forEach(day=>editableCategories.forEach(cat=>Object.keys(staffingBlocks).forEach(sh=>{
     if((staffFilter.category==="Все"||staffFilter.category===cat)&&(staffFilter.shift==="Все"||staffFilter.shift===sh)&&(staffFilter.day==="Все"||staffFilter.day===day)){
-      const n=need(cat,sh), a=coverage(day,cat,sh), diff=a-n;
+      const n=need(day, cat, sh), a=coverage(day,cat,sh), diff=a-n;
       rows.push(`<tr><td>${day}</td><td>${cat}</td><td>${sh}</td><td><input type="number" value="${n}" min="0" onchange="setNeed('${cat}','${sh}',this.value)"></td><td>${a}</td><td><span class="badge ${statusClass(diff)}">${statusText(diff)}</span></td></tr>`);
     }
   })));
@@ -438,20 +482,45 @@ function makeOffFromDrawer(day, empId){
   closeDrawer(); render(); toast('Выходной поставлен');
 }
 function quickAdd(day){
-  const name=prompt('Введите часть имени сотрудника:'); if(!name) return;
-  const emp=state.employees.find(e=>e.name.toLowerCase().includes(name.toLowerCase()));
-  if(!emp) return toast('Сотрудник не найден');
-  const suggestedCat = currentCategory !== "Общий" ? currentCategory : emp.position;
-  const category = prompt(`Категория (${(emp.skills||[]).join(', ')}):`, suggestedCat) || suggestedCat;
-  if(!editableCategories.includes(category)) return toast('Такой категории нет');
-  if(!canWorkCategory(emp, category)) return toast('У сотрудника нет навыка для этой категории');
-  const shift = prompt('Смена:', emp.defaultShift) || emp.defaultShift;
-  if(!shiftTemplates[shift]) return toast('Такой смены нет');
-  if(hasTimeConflict(day, emp.id, shift)) return toast('Этот сотрудник уже работает в это время');
-  removeOffForEmployee(day, emp.id);
-  state.weeks[state.currentWeek].schedule[day].push({employeeId:emp.id,category,shift,status:(category!==emp.position || shift!==emp.defaultShift)?'changed':'work'});
-  state.weeks[state.currentWeek].history.push(`${shortName(emp.name)}: добавлен ${day}, ${category}, ${shift}`);
-  render(); toast('Добавлено');
+  const text = prompt("Введите часть имени сотрудника:");
+  if(!text) return;
+
+  const found = state.employees.filter(e =>
+    e.active && e.name.toLowerCase().includes(text.toLowerCase())
+  );
+
+  if(!found.length) return toast("Сотрудник не найден");
+
+  let message = "Найдены сотрудники:\n\n";
+  found.slice(0,10).forEach((e,i)=>{
+    message += `${i+1}. ${shortName(e.name)} — ${e.position} — ${e.defaultShift}\n`;
+  });
+
+  const num = Number(prompt(message + "\nВведите номер сотрудника:"));
+  const emp = found[num - 1];
+
+  if(!emp) return toast("Неверный выбор");
+
+  if(hasTimeConflict(day, emp.id, emp.defaultShift)){
+    return toast("Этот сотрудник уже работает в это время");
+  }
+
+  state.weeks[state.currentWeek].schedule[day] =
+    dayItems(day).filter(i => !(i.employeeId === emp.id && i.status === "off"));
+
+  state.weeks[state.currentWeek].schedule[day].push({
+    employeeId: emp.id,
+    category: emp.position,
+    shift: emp.defaultShift,
+    status: "work"
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(emp.name)}: добавлен ${day}`
+  );
+
+  render();
+  toast(`Добавлен: ${shortName(emp.name)}`);
 }
 function setCategory(c){ currentCategory=c; render(); }
 function massDayoff(){
@@ -465,7 +534,7 @@ function massDayoff(){
   state.weeks[state.currentWeek].history.push(`Поставлены выходные: ${emps.length} сотрудников, ${days.length} дат`);
   render(); toast("Выходные поставлены");
 }
-function setNeed(cat,sh,val){ state.weeks[state.currentWeek].staffing[cat][sh]=Number(val); render(); }
+function setNeed(day,cat,sh,val){ state.weeks[state.currentWeek].staffing[cat][sh]=Number(val); render(); }
 function addEmployee(){
   const name=document.getElementById("newName").value.trim(); const position=document.getElementById("newPos").value; const defaultShift=document.getElementById("newShift").value;
   if(!name) return toast("Введите ФИО");
