@@ -351,13 +351,13 @@ function render(options = {}){
   const page = document.getElementById(currentPage);
   if(page) page.classList.add("active");
   document.querySelectorAll(".nav").forEach(n=>n.classList.toggle("active", n.dataset.page===currentPage));
-  const pageTitles = { dashboard:"Помощник", schedule:"График недели", dayoffs:"Выходные", employees:"Сотрудники", staffing:"Штатка", history:"История", skills:"Навыки" };
+  const pageTitles = { dashboard:"Помощник", schedule:"График недели", attendance:"Посещаемость", dayoffs:"Выходные", employees:"Сотрудники", staffing:"Штатка", history:"История", skills:"Навыки" };
   const title = document.getElementById("pageTitle");
   if(title) title.textContent = pageTitles[currentPage] || "График недели";
   const weekTitle = document.getElementById("weekTitle");
   if(weekTitle) weekTitle.textContent = `Неделя ${weekLabel(state.currentWeek)}`;
   renderWeekSelect();
-  renderDashboard(); renderSchedule(); renderDayoffs(); renderEmployees(); renderSkills(); renderStaffing(); renderHistory();
+  renderDashboard(); renderSchedule(); renderDayoffs(); renderAttendance(); renderEmployees(); renderSkills(); renderStaffing(); renderHistory();
   isRendering = false;
   if(shouldSave) saveState();
 }
@@ -514,6 +514,209 @@ function renderStaffing(){
   })));
   el.innerHTML = `<div class="card"><h3>Фильтр штатки</h3><div class="filters"><select onchange="staffFilter.category=this.value;render()"><option>Все</option>${editableCategories.map(c=>`<option ${staffFilter.category===c?'selected':''}>${c}</option>`).join("")}</select><select onchange="staffFilter.shift=this.value;render()"><option>Все</option>${Object.keys(staffingBlocks).map(s=>`<option ${staffFilter.shift===s?'selected':''}>${s}</option>`).join("")}</select><select onchange="staffFilter.day=this.value;render()"><option>Все</option>${days.map(d=>`<option ${staffFilter.day===d?'selected':''} value="${d}">${d}</option>`).join("")}</select></div></div><div class="card"><table class="table"><thead><tr><th>Дата</th><th>Категория</th><th>Смена</th><th>Нужно</th><th>Стоит</th><th>Статус</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
+
+function ensureAttendance(){
+  const week = state.weeks[state.currentWeek];
+  if(!week.attendance) week.attendance = {};
+}
+
+function attendanceKey(day, empId, shift, category){
+  return `${day}_${empId}_${shift}_${category}`;
+}
+
+function setAttendance(day, empId, shift, category, status){
+  ensureAttendance();
+
+  const key = attendanceKey(day, empId, shift, category);
+
+  state.weeks[state.currentWeek].attendance[key] = {
+    day,
+    empId,
+    shift,
+    category,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(employee(empId)?.name)}: посещаемость — ${status}`
+  );
+
+  render();
+  toast("Посещаемость сохранена");
+}
+
+function replaceAbsent(day, empId, shift, category){
+  const search = prompt("Введите имя сотрудника на замену:");
+  if(!search) return;
+
+  const found = state.employees.filter(e =>
+    e.active &&
+    e.name.toLowerCase().includes(search.toLowerCase()) &&
+    canWorkCategory(e, category)
+  );
+
+  if(!found.length) return toast("Подходящий сотрудник не найден");
+
+  let text = "Кого поставить на замену?\n\n";
+  found.slice(0,10).forEach((e,i)=>{
+    text += `${i+1}. ${shortName(e.name)} — ${e.position} — ${e.defaultShift}\n`;
+  });
+
+  const num = Number(prompt(text));
+  const repl = found[num - 1];
+
+  if(!repl) return toast("Неверный выбор");
+
+  if(hasTimeConflict(day, repl.id, shift)){
+    return toast("Этот сотрудник уже работает в это время");
+  }
+
+  setAttendance(day, empId, shift, category, "Не вышел");
+
+  removeOffForEmployee(day, repl.id);
+
+  state.weeks[state.currentWeek].schedule[day].push({
+    employeeId: repl.id,
+    category,
+    shift,
+    status: "changed",
+    replacementFor: empId
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(repl.name)} заменил ${shortName(employee(empId)?.name)}`
+  );
+
+  render();
+  toast("Замена поставлена");
+}
+
+function renderAttendance(){
+  const target = document.getElementById("attendance");
+  if(!target) return;
+
+  ensureAttendance();
+
+  const today = dateKey(new Date());
+  const days = getWeekDays(state.currentWeek).map(dateKey);
+  const selectedDay = days.includes(today) ? today : days[0];
+
+  const items = dayItems(selectedDay).filter(i => isWorkItem(i));
+
+  const rows = items.map(i => {
+    const emp = employee(i.employeeId);
+    const key = attendanceKey(selectedDay, i.employeeId, i.shift, i.category);
+    const att = state.weeks[state.currentWeek].attendance[key];
+    const status = att?.status || "Не отмечено";
+
+    return `
+      <tr>
+        <td>${shortName(emp?.name)}</td>
+        <td>${i.category}</td>
+        <td>${i.shift}</td>
+        <td><span class="badge ${status === "Вышел" ? "ok" : status === "Не вышел" ? "low" : status === "Ушёл раньше" ? "high" : ""}">${status}</span></td>
+        <td>
+          <button onclick="setAttendance('${selectedDay}','${i.employeeId}','${i.shift}','${i.category}','Вышел')">✅ Вышел</button>
+          <button class="secondary" onclick="setAttendance('${selectedDay}','${i.employeeId}','${i.shift}','${i.category}','Ушёл раньше')">🟡 Ушёл раньше</button>
+          <button class="danger" onclick="replaceAbsent('${selectedDay}','${i.employeeId}','${i.shift}','${i.category}')">❌ Не вышел / заменить</button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  const report = weeklyAttendanceReport();
+
+  target.innerHTML = `
+    <div class="card">
+      <h3>Посещаемость за сегодня</h3>
+      <p class="muted">Показывает сотрудников, которые должны работать сегодня.</p>
+
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Сотрудник</th>
+            <th>Категория</th>
+            <th>Смена</th>
+            <th>Статус</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody>${rows || `<tr><td colspan="5">На сегодня смен нет</td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Отчёт за неделю</h3>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Сотрудник</th>
+            <th>Вышел</th>
+            <th>Не вышел</th>
+            <th>Ушёл раньше</th>
+            <th>Замены</th>
+          </tr>
+        </thead>
+        <tbody>${report}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function weeklyAttendanceReport(){
+  ensureAttendance();
+
+  const stats = {};
+
+  Object.values(state.weeks[state.currentWeek].attendance || {}).forEach(a => {
+    const emp = employee(a.empId);
+    if(!emp) return;
+
+    if(!stats[a.empId]){
+      stats[a.empId] = {
+        name: shortName(emp.name),
+        came: 0,
+        absent: 0,
+        early: 0,
+        replace: 0
+      };
+    }
+
+    if(a.status === "Вышел") stats[a.empId].came++;
+    if(a.status === "Не вышел") stats[a.empId].absent++;
+    if(a.status === "Ушёл раньше") stats[a.empId].early++;
+  });
+
+  getWeekDays(state.currentWeek).map(dateKey).forEach(day => {
+    dayItems(day).forEach(i => {
+      if(i.replacementFor){
+        if(!stats[i.employeeId]){
+          const emp = employee(i.employeeId);
+          stats[i.employeeId] = {
+            name: shortName(emp?.name),
+            came: 0,
+            absent: 0,
+            early: 0,
+            replace: 0
+          };
+        }
+        stats[i.employeeId].replace++;
+      }
+    });
+  });
+
+  return Object.values(stats).map(s => `
+    <tr>
+      <td>${s.name}</td>
+      <td>${s.came}</td>
+      <td>${s.absent}</td>
+      <td>${s.early}</td>
+      <td>${s.replace}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5">Пока данных нет</td></tr>`;
+}
+
 function renderHistory(){
   const el = document.getElementById("history");
   if(!el) return;
