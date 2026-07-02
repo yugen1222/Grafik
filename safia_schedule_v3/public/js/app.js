@@ -26,7 +26,10 @@ const staffingBlocks = {
 
 const categories = ["Общий", "Продавец", "Официант", "Бариста", "Кассир", "Техничка", "Морозильщик", "Менеджер"];
 const editableCategories = categories.filter(c => c !== "Общий");
+const serviceRatedCategories = ["Продавец", "Официант"];
 const daysShort = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const STORAGE_KEY = "safiaScheduleV6";
+const OLD_STORAGE_KEYS = ["safiaScheduleV5", "safiaScheduleV4", "safiaScheduleV3"];
 
 const defaultEmployees = `ABDIYEVA SHAHINABONU SUNNATULLO QIZI|Продавец|16:00-23:00
 ABDUKARIMOV UMIDJON ILXOM O'G'LI|Продавец|23:00-08:00
@@ -99,11 +102,21 @@ let staffFilter = { category: "Все", shift: "Все", day: "Все" };
 let dayoffFilter = { search: "", category: "Все", shift: "Все" };
 let isRemoteUpdate = false;
 let firebaseStarted = false;
+let isRendering = false;
 
 function parseEmployees() {
   return defaultEmployees.split("\n").map((line, index) => {
     const [name, position, shift] = line.split("|");
-    return { id: `e${index+1}`, name, position, defaultShift: shift, skills: [position], universal: false, active: true };
+    return {
+      id: `e${index + 1}`,
+      name,
+      position,
+      defaultShift: shift,
+      skills: [position],
+      universal: false,
+      active: true,
+      serviceScore: serviceRatedCategories.includes(position) ? 50 : null
+    };
   });
 }
 
@@ -133,40 +146,101 @@ function createWeek(startKey, copyFromKey=null){
   const days = getWeekDays(startKey).map(dateKey);
   const schedule = {};
   days.forEach(day => schedule[day] = []);
+
   if(copyFromKey && state.weeks[copyFromKey]){
     const oldDays = getWeekDays(copyFromKey).map(dateKey);
     days.forEach((day,i)=>{
-      schedule[day] = (state.weeks[copyFromKey].schedule[oldDays[i]] || []).map(x=>({...x, day}));
+      schedule[day] = (state.weeks[copyFromKey].schedule[oldDays[i]] || []).map(x => ({ ...x, day }));
     });
   } else {
     days.forEach(day => {
-      state.employees.filter(e=>e.active).forEach(e => schedule[day].push({ employeeId:e.id, category:e.position, shift:e.defaultShift, status:"work" }));
+      state.employees.filter(e=>e.active).forEach(e => schedule[day].push({
+        employeeId:e.id,
+        category:e.position,
+        shift:e.defaultShift,
+        status:"work"
+      }));
     });
   }
+
   const staffing = {};
-  days.forEach(day => {
-    staffing[day] = blankStaffing();
+  days.forEach(day => staffing[day] = blankStaffing());
+  state.weeks[startKey] = { startKey, staffing, schedule, history: [`Создана неделя ${weekLabel(startKey)}`] };
+}
+
+function migrateState(s){
+  if(!s || typeof s !== "object") return null;
+  s.employees = Array.isArray(s.employees) ? s.employees : parseEmployees();
+  s.weeks = s.weeks || {};
+  s.role = s.role || "admin";
+  s.currentWeek = s.currentWeek || dateKey(weekStart(new Date()));
+
+  s.employees.forEach((e, idx) => {
+    e.id = e.id || `e${idx+1}`;
+    e.name = e.name || "Без имени";
+    e.position = e.position || "Продавец";
+    e.defaultShift = e.defaultShift || "08:00-16:00";
+    e.skills = Array.isArray(e.skills) ? Array.from(new Set(e.skills.concat([e.position]))) : [e.position];
+    e.universal = Boolean(e.universal);
+    e.active = e.active !== false;
+    if(serviceRatedCategories.includes(e.position)) {
+      e.serviceScore = Number.isFinite(Number(e.serviceScore)) ? Number(e.serviceScore) : 50;
+    } else {
+      e.serviceScore = null;
+    }
   });
 
-  state.weeks[startKey] = {
-    startKey,
-    staffing,
-    schedule,
-    history: [`Создана неделя ${weekLabel(startKey)}`]
-  };
+  Object.keys(s.weeks).forEach(weekKey => {
+    const week = s.weeks[weekKey];
+    const days = getWeekDays(weekKey).map(dateKey);
+    week.schedule = week.schedule || {};
+    days.forEach(day => {
+      week.schedule[day] = Array.isArray(week.schedule[day]) ? week.schedule[day] : [];
+      week.schedule[day] = week.schedule[day].map(item => ({
+        employeeId: item.employeeId,
+        category: item.category || employee(item.employeeId)?.position || "Продавец",
+        shift: item.shift || employee(item.employeeId)?.defaultShift || "08:00-16:00",
+        status: item.status === "off" ? "off" : (item.status === "changed" ? "changed" : "work"),
+        bySkill: Boolean(item.bySkill)
+      }));
+    });
+
+    const oldStaffing = week.staffing || {};
+    const looksDaily = days.some(day => oldStaffing[day]);
+    if(!looksDaily){
+      const daily = {};
+      days.forEach(day => daily[day] = JSON.parse(JSON.stringify(Object.keys(oldStaffing).length ? oldStaffing : blankStaffing())));
+      week.staffing = daily;
+    } else {
+      days.forEach(day => week.staffing[day] = week.staffing[day] || blankStaffing());
+    }
+    week.history = Array.isArray(week.history) ? week.history : [];
+  });
+  return s;
 }
 
 function loadState(){
-  const saved = localStorage.getItem("safiaScheduleV5");
-  if(saved) return JSON.parse(saved);
+  const keys = [STORAGE_KEY, ...OLD_STORAGE_KEYS];
+  for(const key of keys){
+    const saved = localStorage.getItem(key);
+    if(saved){
+      try {
+        const migrated = migrateState(JSON.parse(saved));
+        if(migrated) return migrated;
+      } catch (e) {
+        console.warn("Bad saved state", key, e);
+      }
+    }
+  }
   const start = dateKey(weekStart(new Date()));
   const s = { employees: parseEmployees(), weeks: {}, currentWeek: start, role:"admin" };
   window.state = s;
   return s;
 }
+
 function saveState(){
-  localStorage.setItem("safiaScheduleV5", JSON.stringify(state));
-  if(window.db && window.SAFIA_PATH && firebaseStarted && !isRemoteUpdate){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if(window.db && window.SAFIA_PATH && firebaseStarted && !isRemoteUpdate && !isRendering){
     window.db.ref(window.SAFIA_PATH).set({
       state,
       updatedAt: Date.now(),
@@ -180,27 +254,27 @@ function startFirebaseSync(){
   const databaseRef = window.db.ref(window.SAFIA_PATH);
   databaseRef.on("value", snapshot => {
     const data = snapshot.val();
-
     if(!data || !data.state){
       firebaseStarted = true;
       saveState();
       return;
     }
-
     firebaseStarted = true;
     if(data.updatedBy === window.CLIENT_ID) return;
-
     isRemoteUpdate = true;
-    state = data.state;
-    localStorage.setItem("safiaScheduleV5", JSON.stringify(state));
-    ensureWeek();
-    render();
+    state = migrateState(data.state) || state;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    ensureWeek(false);
+    render({ save:false });
     isRemoteUpdate = false;
     toast("Данные обновились с другого устройства");
   });
 }
 
-function ensureWeek(){ if(!state.weeks[state.currentWeek]) createWeek(state.currentWeek); saveState(); }
+function ensureWeek(shouldSave=true){
+  if(!state.weeks[state.currentWeek]) createWeek(state.currentWeek);
+  if(shouldSave) saveState();
+}
 ensureWeek();
 
 function employee(id){ return state.employees.find(e=>e.id===id); }
@@ -212,6 +286,15 @@ function coversShift(item, blockName){
 }
 function itemHours(item){ return shiftTemplates[item.shift]?.hours || 0; }
 function isWorkItem(item){ return item && (item.status === "work" || item.status === "changed"); }
+function dayItems(day){ return state.weeks[state.currentWeek].schedule[day] || []; }
+function isDayOff(day, empId){ return dayItems(day).some(i=>i.employeeId===empId && i.status==="off"); }
+function canWorkCategory(emp, category){ return emp && (emp.position === category || emp.universal || (emp.skills || []).includes(category)); }
+function removeOffForEmployee(day, empId){
+  state.weeks[state.currentWeek].schedule[day] = dayItems(day).filter(i => !(i.employeeId === empId && i.status === "off"));
+}
+function hasAnyAssignment(day, empId, ignoreItem=null){
+  return dayItems(day).some(i => isWorkItem(i) && i.employeeId === empId && (!ignoreItem || i !== ignoreItem));
+}
 function hasTimeConflict(day, empId, newShift, ignoreItem = null){
   const newTpl = shiftTemplates[newShift];
   if(!newTpl) return false;
@@ -224,23 +307,9 @@ function hasTimeConflict(day, empId, newShift, ignoreItem = null){
     return overlap(oldTpl, newTpl) > 0;
   });
 }
-function canWorkCategory(emp, category){
-  return emp && (emp.position === category || emp.universal || (emp.skills || []).includes(category));
+function totalHoursForEmployee(day, empId, ignoreItem=null){
+  return dayItems(day).filter(i => isWorkItem(i) && i.employeeId === empId && (!ignoreItem || i !== ignoreItem)).reduce((sum, i) => sum + itemHours(i), 0);
 }
-function removeOffForEmployee(day, empId){
-  state.weeks[state.currentWeek].schedule[day] = dayItems(day).filter(i => !(i.employeeId === empId && i.status === "off"));
-}
-function removeAssignment(day, empId, category, shift){
-  const before = dayItems(day).length;
-  state.weeks[state.currentWeek].schedule[day] = dayItems(day).filter(i => !(i.employeeId === empId && i.category === category && i.shift === shift && isWorkItem(i)));
-  if(dayItems(day).length !== before){
-    state.weeks[state.currentWeek].history.push(`${shortName(employee(empId)?.name)}: удалено назначение ${day}`);
-    closeDrawer(); render(); toast("Назначение удалено");
-  }
-}
-
-function dayItems(day){ return state.weeks[state.currentWeek].schedule[day] || []; }
-function isDayOff(day, empId){ return dayItems(day).some(i=>i.employeeId===empId && i.status==="off"); }
 function coverage(day, category, shiftName){
   return dayItems(day).filter(i=>isWorkItem(i) && i.category===category && coversShift(i, shiftName)>0).length;
 }
@@ -257,63 +326,62 @@ function problems(){
 }
 
 function dayOffSuggestions(day, category, shiftName){
-  const items = dayItems(day).filter(i =>
-    i.status === "work" &&
-    i.category === category &&
-    coversShift(i, shiftName) > 0
-  );
-
-  return items
-    .map(i => {
-      const e = employee(i.employeeId);
-      return {
-        emp: e,
-        item: i,
-        score: e.serviceScore ?? 50
-      };
-    })
-    .sort((a,b) => a.score - b.score);
+  if(!serviceRatedCategories.includes(category)) return [];
+  const items = dayItems(day).filter(i => isWorkItem(i) && i.category === category && coversShift(i, shiftName) > 0);
+  return items.map(i => {
+    const e = employee(i.employeeId);
+    return { emp: e, item: i, score: Number(e?.serviceScore ?? 50) };
+  }).sort((a,b) => a.score - b.score);
 }
 
-function render(){
+function overstaffMessage(day, category, shiftName){
+  const diff = coverage(day, category, shiftName) - need(day, category, shiftName);
+  if(diff <= 0) return "";
+  const suggestions = dayOffSuggestions(day, category, shiftName).slice(0, diff);
+  if(!suggestions.length) return `Превышает штатку: лишние ${diff}.`;
+  return `Превышает штатку: лишние ${diff}. Можно дать выходной: ${suggestions.map(s=>`${shortName(s.emp?.name)} (${s.score})`).join(", ")}`;
+}
+
+function render(options = {}){
+  const shouldSave = options.save !== false;
+  isRendering = true;
   state.role = document.getElementById("roleSelect")?.value || state.role;
   document.querySelectorAll(".admin-only").forEach(el=>el.style.display = state.role==="admin" ? "block" : "none");
   document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
-  document.getElementById(currentPage).classList.add("active");
+  const page = document.getElementById(currentPage);
+  if(page) page.classList.add("active");
   document.querySelectorAll(".nav").forEach(n=>n.classList.toggle("active", n.dataset.page===currentPage));
-  document.getElementById("pageTitle").textContent = ({dashboard:"Помощник",schedule:"График недели",dayoffs:"Выходные",employees:"Сотрудники",staffing:"Штатка",history:"История",skills:"Навыки"})[currentPage];
-  document.getElementById("weekTitle").textContent = `Неделя ${weekLabel(state.currentWeek)}`;
+  const pageTitles = { dashboard:"Помощник", schedule:"График недели", dayoffs:"Выходные", employees:"Сотрудники", staffing:"Штатка", history:"История", skills:"Навыки" };
+  const title = document.getElementById("pageTitle");
+  if(title) title.textContent = pageTitles[currentPage] || "График недели";
+  const weekTitle = document.getElementById("weekTitle");
+  if(weekTitle) weekTitle.textContent = `Неделя ${weekLabel(state.currentWeek)}`;
   renderWeekSelect();
   renderDashboard(); renderSchedule(); renderDayoffs(); renderEmployees(); renderSkills(); renderStaffing(); renderHistory();
-  saveState();
+  isRendering = false;
+  if(shouldSave) saveState();
 }
 
 function renderWeekSelect(){
   const sel=document.getElementById("weekSelect");
+  if(!sel) return;
   sel.innerHTML = Object.keys(state.weeks).sort().map(k=>`<option value="${k}" ${k===state.currentWeek?'selected':''}>${weekLabel(k)}</option>`).join("");
 }
 function statusClass(diff){ return diff<0?"low":diff>0?"high":"ok"; }
 function statusText(diff){ return diff<0?`Не хватает ${Math.abs(diff)}`:diff>0?`Лишние ${diff}`:"Норма"; }
 
 function renderDashboard(){
-  const p=problems();
-  const critical=p.filter(x=>x.diff<0).slice(0,8);
-  ${extra.map(x => {
+  const el = document.getElementById("dashboard");
+  if(!el) return;
+  const p = problems();
+  const critical = p.filter(x=>x.diff<0).slice(0,8);
+  const extra = p.filter(x=>x.diff>0).slice(0,12);
+  const suggestions = critical.map(x=>`<div class="infoBox"><b>🔴 ${x.day} · ${x.cat} · ${x.sh}</b><br><span class="muted">Не хватает ${Math.abs(x.diff)}. Проверь сотрудников с подходящим навыком.</span></div>`).join("") || `<div class="infoBox">✅ Критичных нехваток нет</div>`;
+  const extraHtml = extra.map(x => {
     const sug = dayOffSuggestions(x.day, x.cat, x.sh).slice(0, x.diff);
-
-    return `
-      <div class="infoBox">
-        <b>🟡 ${x.day} · ${x.cat} · ${x.sh}</b><br>
-        <span class="muted">Лишние: ${x.diff}. Нужно ${x.n}, стоит ${x.a}</span><br>
-        <b>Можно дать выходной:</b><br>
-        ${sug.map(s => `
-          • ${shortName(s.emp?.name)} — балл сервиса: ${s.score}
-        `).join("<br>")}
-      </div>
-    `;
-  }).join("") || "<p>Лишних нет ✅</p>"}
-  const suggestions = critical.map(x=>`<div class="infoBox"><b>🔴 ${x.day} · ${x.cat} · ${x.sh}</b><br><span class="muted">Не хватает ${Math.abs(x.diff)}. Проверь универсалов или сотрудников с частичным покрытием смены.</span></div>`).join("") || `<div class="infoBox">✅ Критичных нехваток нет</div>`;
-  document.getElementById("dashboard").innerHTML = `
+    return `<div class="infoBox"><b>🟡 ${x.day} · ${x.cat} · ${x.sh}</b><br><span class="muted">Лишние: ${x.diff}. Нужно ${x.n}, стоит ${x.a}</span>${sug.length ? `<br><b>Можно дать выходной:</b><br>${sug.map(s => `• ${shortName(s.emp?.name)} — рейтинг: ${s.score}`).join("<br>")}` : ""}</div>`;
+  }).join("") || "<p>Лишних нет ✅</p>";
+  el.innerHTML = `
     <div class="quickStats">
       <div class="stat"><small>Всего проблем</small><b>${p.length}</b></div>
       <div class="stat"><small>Нехватка</small><b>${p.filter(x=>x.diff<0).length}</b></div>
@@ -321,14 +389,16 @@ function renderDashboard(){
       <div class="stat"><small>Неделя</small><b style="font-size:22px">${weekLabel(state.currentWeek)}</b></div>
     </div>
     <div class="card"><h3>✨ Лента рекомендаций</h3><div class="infoGrid">${suggestions}</div></div>
-    <div class="card"><h3>Лишние сотрудники</h3>${extra.map(x=>`<p><span class="badge high">Лишние ${x.diff}</span> ${x.day} · ${x.cat} · ${x.sh}: нужно ${x.n}, стоит ${x.a}</p>`).join("") || "<p>Лишних нет ✅</p>"}</div>
-  `;
+    <div class="card"><h3>Лишние сотрудники</h3><div class="infoGrid">${extraHtml}</div></div>`;
 }
+
 function renderSchedule(){
+  const el = document.getElementById("schedule");
+  if(!el) return;
   const p=problems();
   const low=p.filter(x=>x.diff<0).length, high=p.filter(x=>x.diff>0).length;
   const activePeople = getWeekDays(state.currentWeek).map(dateKey).reduce((sum,day)=>sum+dayItems(day).filter(i=>isWorkItem(i)).length,0);
-  document.getElementById("schedule").innerHTML = `
+  el.innerHTML = `
     <div class="quickStats">
       <div class="stat"><small>Проблемы недели</small><b>${p.length}</b></div>
       <div class="stat"><small>Не хватает</small><b>${low}</b></div>
@@ -341,9 +411,9 @@ function renderSchedule(){
         <button class="secondary" onclick="currentPage='dashboard';render()">✨ Помощник</button>
       </div>
       <div class="board">${getWeekDays(state.currentWeek).map((d,i)=>renderDayColumn(dateKey(d), daysShort[i], formatDate(d))).join("")}</div>
-    </div>
-  `;
+    </div>`;
 }
+
 function renderDayColumn(day, label, display){
   const cats = currentCategory==="Общий" ? editableCategories : [currentCategory];
   const mini = cats.slice(0,4).map(cat=>{
@@ -365,15 +435,21 @@ function renderShift(day, sh){
     html += items.map(i=>{
       const emp = employee(i.employeeId);
       const full = coversShift(i,sh) >= (staffingBlocks[sh].end-staffingBlocks[sh].start);
-      return `<div class="empCard ${i.status==='changed'?'changed':''}" draggable="true" ondragstart="dragEmp(event,'${day}','${i.employeeId}','${i.category}','${i.shift}')" onclick="openEmployeeDrawer('${day}','${i.employeeId}','${i.category}','${i.shift}')"><b>${shortName(emp?.name)}</b><div class="empMeta"><span>${i.shift}</span><span class="empSkill">${full?'полная':'часть'} ${coversShift(i,sh)}ч</span></div></div>`;
+      const changedClass = i.status==='changed' || i.bySkill ? 'changed' : '';
+      return `<div class="empCard ${changedClass}" draggable="true" ondragstart="dragEmp(event,'${day}','${i.employeeId}','${i.category}','${i.shift}')" onclick="openEmployeeDrawer('${day}','${i.employeeId}','${i.category}','${i.shift}')"><b>${shortName(emp?.name)}</b><div class="empMeta"><span>${i.shift}</span><span class="empSkill">${full?'полная':'часть'} ${coversShift(i,sh)}ч</span></div></div>`;
     }).join("") || `<div class="empty">Пока пусто</div>`;
+    const msg = overstaffMessage(day, cat, sh);
+    if(msg) html += `<div class="empty warningText">${msg}</div>`;
   });
   return `<div class="shiftBox" ondragover="event.preventDefault()" ondrop="dropEmp(event,'${day}','${sh}')">${html}</div>`;
 }
 function renderOff(day){
   return dayItems(day).filter(i=>i.status==="off").map(i=>`<div class="empCard dayoffCard" onclick="openEmployeeDrawer('${day}','${i.employeeId}','','')"><b>${shortName(employee(i.employeeId)?.name)}</b><div class="empMeta"><span>Выходной</span><span>🏖</span></div></div>`).join("") || `<div class="empty">Нет выходных</div>`;
 }
+
 function renderDayoffs(){
+  const el = document.getElementById("dayoffs");
+  if(!el) return;
   const days = getWeekDays(state.currentWeek);
   const filteredEmployees = state.employees.filter(e => {
     if(!e.active) return false;
@@ -382,7 +458,7 @@ function renderDayoffs(){
     const shiftOk = dayoffFilter.shift === "Все" || e.defaultShift === dayoffFilter.shift;
     return searchOk && categoryOk && shiftOk;
   });
-  document.getElementById("dayoffs").innerHTML = `
+  el.innerHTML = `
     <div class="card"><h3>Фильтр выходных</h3>
       <div class="filters">
         <input placeholder="Поиск сотрудника" value="${dayoffFilter.search}" oninput="dayoffFilter.search=this.value;render()">
@@ -393,13 +469,15 @@ function renderDayoffs(){
       </div>
     </div>
     <div class="card"><h3>Поставить выходной</h3>
-      <div class="grid grid2"><div><b>Сотрудники (${filteredEmployees.length})</b><div class="checks">${filteredEmployees.map(e=>`<label><input type="checkbox" class="offEmp" value="${e.id}"> ${shortName(e.name)} <span class="muted">${e.position} · ${e.defaultShift}</span></label>`).join("")}</div></div><div><b>Даты</b><div class="checks">${days.map((d,i)=>`<label><input type="checkbox" class="offDay" value="${dateKey(d)}"> ${daysShort[i]} ${formatDate(d)}</label>`).join("")}</div></div></div><br><button onclick="massDayoff()">Поставить выходной</button></div>`;
+      <div class="grid grid2"><div><b>Сотрудники (${filteredEmployees.length})</b><div class="checks">${filteredEmployees.map(e=>`<label><input type="checkbox" class="offEmp" value="${e.id}"> ${shortName(e.name)} <span class="muted">${e.position} · ${e.defaultShift}${serviceRatedCategories.includes(e.position) ? ` · рейтинг ${e.serviceScore}` : ""}</span></label>`).join("")}</div></div><div><b>Даты</b><div class="checks">${days.map((d,i)=>`<label><input type="checkbox" class="offDay" value="${dateKey(d)}"> ${daysShort[i]} ${formatDate(d)}</label>`).join("")}</div></div></div><br><button onclick="massDayoff()">Поставить выходной</button></div>`;
 }
 function selectFilteredDayoffEmployees(){ document.querySelectorAll(".offEmp").forEach(ch=>ch.checked=true); }
 function clearDayoffFilters(){ dayoffFilter = { search:"", category:"Все", shift:"Все" }; render(); }
 
 function renderEmployees(){
-  document.getElementById("employees").innerHTML = `<div class="card"><h3>Добавить сотрудника</h3><div class="filters"><input id="newName" placeholder="ФИО"><select id="newPos">${editableCategories.map(c=>`<option>${c}</option>`)}</select><select id="newShift">${Object.keys(shiftTemplates).map(s=>`<option>${s}</option>`)}</select><button onclick="addEmployee()">Добавить</button></div></div><div class="list">${state.employees.map(e=>`<div class="employeeRow"><b>${e.name}</b><span>${e.position}</span><span>${e.defaultShift}</span><span>${e.skills.map(s=>`<i class="pill">${s}</i>`).join("")}</span><button class="danger" onclick="removeEmployee('${e.id}')">Удалить</button></div>`).join("")}</div>`;
+  const el = document.getElementById("employees");
+  if(!el) return;
+  el.innerHTML = `<div class="card"><h3>Добавить сотрудника</h3><div class="filters"><input id="newName" placeholder="ФИО"><select id="newPos">${editableCategories.map(c=>`<option>${c}</option>`)}</select><select id="newShift">${Object.keys(shiftTemplates).map(s=>`<option>${s}</option>`)}</select><button onclick="addEmployee()">Добавить</button></div></div><div class="list">${state.employees.map(e=>`<div class="employeeRow"><b>${e.name}</b><span>${e.position}</span><span>${e.defaultShift}</span><span>${(e.skills||[]).map(s=>`<i class="pill">${s}</i>`).join("")}</span>${serviceRatedCategories.includes(e.position) ? `<span>Рейтинг: <input type="number" min="0" max="100" value="${e.serviceScore ?? 50}" onchange="setServiceScore('${e.id}', this.value)" style="width:70px"></span>` : `<span></span>`}<button class="danger" onclick="removeEmployee('${e.id}')">Удалить</button></div>`).join("")}</div>`;
 }
 function renderSkills(){
   const target = document.getElementById("skills");
@@ -417,21 +495,30 @@ function toggleUniversal(empId, checked){
   const e = employee(empId); if(!e) return;
   e.universal = checked; render(); toast("Универсальность сохранена");
 }
+function setServiceScore(empId, val){
+  const e = employee(empId); if(!e || !serviceRatedCategories.includes(e.position)) return;
+  e.serviceScore = Math.max(0, Math.min(100, Number(val) || 0));
+  render(); toast("Рейтинг сохранён");
+}
 
 function renderStaffing(){
+  const el = document.getElementById("staffing");
+  if(!el) return;
   const days = getWeekDays(state.currentWeek).map(dateKey);
   const rows=[];
   days.forEach(day=>editableCategories.forEach(cat=>Object.keys(staffingBlocks).forEach(sh=>{
     if((staffFilter.category==="Все"||staffFilter.category===cat)&&(staffFilter.shift==="Все"||staffFilter.shift===sh)&&(staffFilter.day==="Все"||staffFilter.day===day)){
       const n=need(day, cat, sh), a=coverage(day,cat,sh), diff=a-n;
-      rows.push(`<tr><td>${day}</td><td>${cat}</td><td>${sh}</td><td><input type="number" value="${n}" min="0" onchange="setNeed('${cat}','${sh}',this.value)"></td><td>${a}</td><td><span class="badge ${statusClass(diff)}">${statusText(diff)}</span></td></tr>`);
+      rows.push(`<tr><td>${day}</td><td>${cat}</td><td>${sh}</td><td><input type="number" value="${n}" min="0" onchange="setNeed('${day}','${cat}','${sh}',this.value)"></td><td>${a}</td><td><span class="badge ${statusClass(diff)}">${statusText(diff)}</span></td></tr>`);
     }
   })));
-  document.getElementById("staffing").innerHTML = `<div class="card"><h3>Фильтр штатки</h3><div class="filters"><select onchange="staffFilter.category=this.value;render()"><option>Все</option>${editableCategories.map(c=>`<option ${staffFilter.category===c?'selected':''}>${c}</option>`)}</select><select onchange="staffFilter.shift=this.value;render()"><option>Все</option>${Object.keys(staffingBlocks).map(s=>`<option ${staffFilter.shift===s?'selected':''}>${s}</option>`)}</select><select onchange="staffFilter.day=this.value;render()"><option>Все</option>${days.map(d=>`<option ${staffFilter.day===d?'selected':''} value="${d}">${d}</option>`)}</select></div></div><div class="card"><table class="table"><thead><tr><th>Дата</th><th>Категория</th><th>Смена</th><th>Нужно</th><th>Стоит</th><th>Статус</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+  el.innerHTML = `<div class="card"><h3>Фильтр штатки</h3><div class="filters"><select onchange="staffFilter.category=this.value;render()"><option>Все</option>${editableCategories.map(c=>`<option ${staffFilter.category===c?'selected':''}>${c}</option>`).join("")}</select><select onchange="staffFilter.shift=this.value;render()"><option>Все</option>${Object.keys(staffingBlocks).map(s=>`<option ${staffFilter.shift===s?'selected':''}>${s}</option>`).join("")}</select><select onchange="staffFilter.day=this.value;render()"><option>Все</option>${days.map(d=>`<option ${staffFilter.day===d?'selected':''} value="${d}">${d}</option>`).join("")}</select></div></div><div class="card"><table class="table"><thead><tr><th>Дата</th><th>Категория</th><th>Смена</th><th>Нужно</th><th>Стоит</th><th>Статус</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
 function renderHistory(){
+  const el = document.getElementById("history");
+  if(!el) return;
   const week=state.weeks[state.currentWeek];
-  document.getElementById("history").innerHTML = `<div class="card"><h3>История недели</h3>${week.history.map(h=>`<p>${h}</p>`).join("")}</div>`;
+  el.innerHTML = `<div class="card"><h3>История недели</h3>${week.history.map(h=>`<p>${h}</p>`).join("")}</div>`;
 }
 
 function openEmployeeDrawer(day, empId, category='', shift=''){
@@ -441,12 +528,14 @@ function openEmployeeDrawer(day, empId, category='', shift=''){
   const hours = items.filter(i=>isWorkItem(i)).reduce((a,i)=>a+itemHours(i),0);
   const allowedCategories = editableCategories.filter(c => canWorkCategory(emp, c));
   const drawer=document.getElementById('drawer');
+  if(!drawer) return;
   drawer.innerHTML = `
     <div class="drawerHead"><div><h2>${shortName(emp.name)}</h2><div class="muted">${emp.position} · ${emp.defaultShift}</div></div><button class="drawerClose" onclick="closeDrawer()">✕</button></div>
     <div class="infoGrid">
       <div class="infoBox"><b>Дата</b><br>${day}</div>
       <div class="infoBox"><b>Часы за день</b><br>${hours} / 17</div>
-      <div class="infoBox"><b>Навыки</b><br>${(emp.skills||[]).map(s=>`<i class="pill">${s}</i>`).join('') || 'Нет'}</div>
+      <div class="infoBox"><b>Навыки</b><br>${(emp.skills||[]).map(s=>`<i class="pill">${s}</i>`).join('') || 'Нет'}${emp.universal ? '<br><i class="pill">Универсал</i>' : ''}</div>
+      ${serviceRatedCategories.includes(emp.position) ? `<div class="infoBox"><b>Рейтинг сервиса</b><br><input type="number" min="0" max="100" value="${emp.serviceScore ?? 50}" onchange="setServiceScore('${emp.id}', this.value)"></div>` : ""}
       <div class="infoBox"><b>Действия</b><br><br>
         <label>Категория</label>
         <select id="drawerCategory">${allowedCategories.map(c=>`<option ${c===category?'selected':''}>${c}</option>`).join('')}</select><br><br>
@@ -459,7 +548,7 @@ function openEmployeeDrawer(day, empId, category='', shift=''){
     </div>`;
   drawer.classList.add('open');
 }
-function closeDrawer(){document.getElementById('drawer').classList.remove('open')}
+function closeDrawer(){ const d=document.getElementById('drawer'); if(d) d.classList.remove('open'); }
 function changeFromDrawer(day, empId, category, oldShift){
   const emp = employee(empId);
   const newShift=document.getElementById('drawerShift').value;
@@ -468,12 +557,17 @@ function changeFromDrawer(day, empId, category, oldShift){
   const item=dayItems(day).find(i=>i.employeeId===empId && i.category===category && i.shift===oldShift && isWorkItem(i)) || dayItems(day).find(i=>i.employeeId===empId && isWorkItem(i));
   if(!item) return toast("Назначение не найдено");
   if(hasTimeConflict(day, empId, newShift, item)) return toast("Нельзя: сотрудник уже работает в это время");
+  const futureHours = totalHoursForEmployee(day, empId, item) + (shiftTemplates[newShift]?.hours || 0);
+  if(futureHours > 17) return toast(`Нельзя: получится ${futureHours} часов. Максимум 17.`);
   item.shift=newShift;
   item.category=newCategory;
+  item.bySkill = newCategory !== emp.position;
   item.status = (newShift !== emp.defaultShift || newCategory !== emp.position) ? 'changed' : 'work';
   removeOffForEmployee(day, empId);
   state.weeks[state.currentWeek].history.push(`${shortName(emp.name)}: изменено на ${newCategory}, ${newShift}`);
   closeDrawer(); render(); toast('Изменение сохранено');
+  const msg = overstaffMessage(day, newCategory, Object.keys(staffingBlocks).find(sh => coversShift(item, sh) > 0) || "1 смена");
+  if(msg) toast(msg);
 }
 function makeOffFromDrawer(day, empId){
   state.weeks[state.currentWeek].schedule[day]=dayItems(day).filter(i=>i.employeeId!==empId);
@@ -484,43 +578,36 @@ function makeOffFromDrawer(day, empId){
 function quickAdd(day){
   const text = prompt("Введите часть имени сотрудника:");
   if(!text) return;
-
-  const found = state.employees.filter(e =>
-    e.active && e.name.toLowerCase().includes(text.toLowerCase())
-  );
-
+  const found = state.employees.filter(e => e.active && e.name.toLowerCase().includes(text.toLowerCase()));
   if(!found.length) return toast("Сотрудник не найден");
-
   let message = "Найдены сотрудники:\n\n";
-  found.slice(0,10).forEach((e,i)=>{
-    message += `${i+1}. ${shortName(e.name)} — ${e.position} — ${e.defaultShift}\n`;
-  });
-
+  found.slice(0,10).forEach((e,i)=>{ message += `${i+1}. ${shortName(e.name)} — ${e.position} — ${e.defaultShift}\n`; });
   const num = Number(prompt(message + "\nВведите номер сотрудника:"));
   const emp = found[num - 1];
-
   if(!emp) return toast("Неверный выбор");
-
-  if(hasTimeConflict(day, emp.id, emp.defaultShift)){
-    return toast("Этот сотрудник уже работает в это время");
-  }
-
-  state.weeks[state.currentWeek].schedule[day] =
-    dayItems(day).filter(i => !(i.employeeId === emp.id && i.status === "off"));
-
+  const category = prompt(`Категория для ${shortName(emp.name)}:`, emp.position) || emp.position;
+  if(!editableCategories.includes(category)) return toast("Такой категории нет");
+  if(!canWorkCategory(emp, category)) return toast("У сотрудника нет такого навыка");
+  const shift = prompt(`Смена для ${shortName(emp.name)}:`, emp.defaultShift) || emp.defaultShift;
+  if(!shiftTemplates[shift]) return toast("Такой смены нет");
+  if(hasTimeConflict(day, emp.id, shift)) return toast("Этот сотрудник уже работает в это время");
+  const futureHours = totalHoursForEmployee(day, emp.id) + (shiftTemplates[shift]?.hours || 0);
+  if(futureHours > 17) return toast(`Нельзя: получится ${futureHours} часов. Максимум 17.`);
+  removeOffForEmployee(day, emp.id);
+  const bySkill = category !== emp.position;
   state.weeks[state.currentWeek].schedule[day].push({
     employeeId: emp.id,
-    category: emp.position,
-    shift: emp.defaultShift,
-    status: "work"
+    category,
+    shift,
+    status: (shift !== emp.defaultShift || bySkill) ? "changed" : "work",
+    bySkill
   });
-
-  state.weeks[state.currentWeek].history.push(
-    `${shortName(emp.name)}: добавлен ${day}`
-  );
-
+  state.weeks[state.currentWeek].history.push(`${shortName(emp.name)}: добавлен ${day} · ${category} · ${shift}`);
   render();
-  toast(`Добавлен: ${shortName(emp.name)}`);
+  toast(`Добавлен: ${shortName(emp.name)} — ${category}`);
+  const firstBlock = Object.keys(staffingBlocks).find(sh => coversShift({shift}, sh) > 0) || "1 смена";
+  const msg = overstaffMessage(day, category, firstBlock);
+  if(msg) setTimeout(() => toast(msg), 400);
 }
 function setCategory(c){ currentCategory=c; render(); }
 function massDayoff(){
@@ -534,24 +621,44 @@ function massDayoff(){
   state.weeks[state.currentWeek].history.push(`Поставлены выходные: ${emps.length} сотрудников, ${days.length} дат`);
   render(); toast("Выходные поставлены");
 }
-function setNeed(day,cat,sh,val){ state.weeks[state.currentWeek].staffing[cat][sh]=Number(val); render(); }
+function setNeed(day,cat,sh,val){
+  if(!state.weeks[state.currentWeek].staffing[day]) state.weeks[state.currentWeek].staffing[day] = blankStaffing();
+  state.weeks[state.currentWeek].staffing[day][cat][sh]=Number(val);
+  render();
+}
 function addEmployee(){
   const name=document.getElementById("newName").value.trim(); const position=document.getElementById("newPos").value; const defaultShift=document.getElementById("newShift").value;
   if(!name) return toast("Введите ФИО");
-  state.employees.push({id:"e"+Date.now(),name,position,defaultShift,skills:[position],universal:false,active:true});
+  state.employees.push({id:"e"+Date.now(),name,position,defaultShift,skills:[position],universal:false,active:true,serviceScore:serviceRatedCategories.includes(position)?50:null});
   render(); toast("Сотрудник добавлен");
 }
 function removeEmployee(id){ if(confirm("Удалить сотрудника?")){ state.employees = state.employees.filter(e=>e.id!==id); render(); } }
-function editAssignment(day, empId, category, shift){
-  const newShift = prompt("Смена:", shift); if(!newShift || !shiftTemplates[newShift]) return;
-  const item = dayItems(day).find(i=>i.employeeId===empId && i.category===category && i.shift===shift);
-  if(item){ item.shift=newShift; state.weeks[state.currentWeek].history.push(`${shortName(employee(empId).name)}: смена изменена на ${newShift}`); render(); }
+function removeAssignment(day, empId, category, shift){
+  const before = dayItems(day).length;
+  state.weeks[state.currentWeek].schedule[day] = dayItems(day).filter(i => !(i.employeeId === empId && i.category === category && i.shift === shift && isWorkItem(i)));
+  if(dayItems(day).length !== before){
+    state.weeks[state.currentWeek].history.push(`${shortName(employee(empId)?.name)}: удалено назначение ${day}`);
+    closeDrawer(); render(); toast("Назначение удалено");
+  }
 }
 function dragEmp(e, day, empId, category, shift){ e.dataTransfer.setData("text/plain", JSON.stringify({day,empId,category,shift})); }
 function dropEmp(e, day, sh){
   const data=JSON.parse(e.dataTransfer.getData("text/plain"));
   const item=dayItems(data.day).find(i=>i.employeeId===data.empId && i.category===data.category && i.shift===data.shift && isWorkItem(i));
-  if(item){ item.shift = Object.keys(shiftTemplates).find(s=>coversShift({shift:s},sh)>=1) || item.shift; item.status='changed'; state.weeks[state.currentWeek].history.push(`Перемещение ${shortName(employee(data.empId).name)}`); render(); }
+  if(!item) return;
+  const newShift = Object.keys(shiftTemplates).find(s=>coversShift({shift:s},sh)>=1) || item.shift;
+  if(hasTimeConflict(day, data.empId, newShift, item)) return toast("Нельзя: сотрудник уже работает в это время");
+  const futureHours = totalHoursForEmployee(day, data.empId, item) + (shiftTemplates[newShift]?.hours || 0);
+  if(futureHours > 17) return toast(`Нельзя: получится ${futureHours} часов. Максимум 17.`);
+  if(data.day !== day){
+    state.weeks[state.currentWeek].schedule[data.day] = dayItems(data.day).filter(i => i !== item);
+    removeOffForEmployee(day, data.empId);
+    state.weeks[state.currentWeek].schedule[day].push(item);
+  }
+  item.shift = newShift;
+  item.status='changed';
+  state.weeks[state.currentWeek].history.push(`Перемещение ${shortName(employee(data.empId).name)}`);
+  render();
 }
 function createNextWeek(){
   const s=new Date(state.currentWeek); s.setDate(s.getDate()+7); const key=dateKey(s);
@@ -571,7 +678,7 @@ function exportExcel(){
     if(items.find(i=>i.status==='off')) return `<td class="off"></td>`;
     const works = getWorkForCategory(emp, day, cat);
     if(!works.length) return `<td></td>`;
-    const changed = works.some(i=>i.status==='changed' || i.category !== emp.position || i.shift !== emp.defaultShift);
+    const changed = works.some(i=>i.status==='changed' || i.bySkill || i.category !== emp.position || i.shift !== emp.defaultShift);
     return `<td class="${changed?'changed':''}">${shortName(emp.name)}</td>`;
   }
   function tableBlock(cat){
@@ -591,14 +698,20 @@ function exportExcel(){
   link.download = `grafik_print_${weekLabel(state.currentWeek)}.xls`;
   link.click();
 }
-function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
+function toast(msg){ const t=document.getElementById("toast"); if(!t) return; t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
 
-document.querySelectorAll(".nav").forEach(n=>n.onclick=()=>{currentPage=n.dataset.page; render();});
-document.getElementById("roleSelect").value=state.role;
-document.getElementById("roleSelect").onchange=e=>{state.role=e.target.value; render();};
-document.getElementById("weekSelect").onchange=e=>{state.currentWeek=e.target.value; render();};
-document.getElementById("nextWeekBtn").onclick=createNextWeek;
-document.getElementById("prevWeekBtn").onclick=prevWeek;
-document.getElementById("excelBtn").onclick=exportExcel;
-render();
-startFirebaseSync();
+const navButtons = document.querySelectorAll(".nav");
+navButtons.forEach(n=>n.onclick=()=>{currentPage=n.dataset.page; render();});
+const roleSelect = document.getElementById("roleSelect");
+if(roleSelect){ roleSelect.value=state.role; roleSelect.onchange=e=>{state.role=e.target.value; render();}; }
+const weekSelect = document.getElementById("weekSelect");
+if(weekSelect){ weekSelect.onchange=e=>{state.currentWeek=e.target.value; ensureWeek(); render();}; }
+const nextWeekBtn = document.getElementById("nextWeekBtn");
+if(nextWeekBtn) nextWeekBtn.onclick=createNextWeek;
+const prevWeekBtn = document.getElementById("prevWeekBtn");
+if(prevWeekBtn) prevWeekBtn.onclick=prevWeek;
+const excelBtn = document.getElementById("excelBtn");
+if(excelBtn) excelBtn.onclick=exportExcel;
+
+render({ save:false });
+setTimeout(startFirebaseSync, 200);
