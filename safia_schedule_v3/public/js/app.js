@@ -133,6 +133,12 @@ function dateKey(d){
   const day = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
+
+function addDays(key, count){
+  const d = new Date(key);
+  d.setDate(d.getDate() + count);
+  return dateKey(d);
+}
 function formatDate(d){ return d.toLocaleDateString("ru-RU", { day:"2-digit", month:"2-digit" }); }
 function getWeekDays(startKey){ const s = new Date(startKey); return [...Array(7)].map((_,i)=>{const d=new Date(s); d.setDate(s.getDate()+i); return d;}); }
 function weekLabel(startKey){ const days=getWeekDays(startKey); return `${formatDate(days[0])}–${formatDate(days[6])}`; }
@@ -243,6 +249,59 @@ function loadState(){
   return s;
 }
 
+function fixOldSundayWeeks(){
+  if(state.__fixedMondayWeeks) return;
+
+  const newWeeks = {};
+
+  Object.keys(state.weeks || {}).forEach(oldKey => {
+    const oldWeek = state.weeks[oldKey];
+    const oldDate = new Date(oldKey);
+    const isSundayStart = oldDate.getDay() === 0;
+
+    const newStartKey = isSundayStart ? addDays(oldKey, 1) : oldKey;
+
+    if(!newWeeks[newStartKey]){
+      const days = getWeekDays(newStartKey).map(dateKey);
+      const schedule = {};
+      const staffing = {};
+
+      days.forEach(day => {
+        schedule[day] = [];
+        staffing[day] = blankStaffing();
+      });
+
+      newWeeks[newStartKey] = {
+        ...oldWeek,
+        startKey: newStartKey,
+        schedule,
+        staffing,
+        history: oldWeek.history || []
+      };
+    }
+
+    Object.keys(oldWeek.schedule || {}).forEach(day => {
+      const newDay = isSundayStart ? addDays(day, 1) : day;
+      if(!newWeeks[newStartKey].schedule[newDay]){
+        newWeeks[newStartKey].schedule[newDay] = [];
+      }
+      newWeeks[newStartKey].schedule[newDay] = oldWeek.schedule[day];
+    });
+
+    Object.keys(oldWeek.staffing || {}).forEach(day => {
+      const newDay = isSundayStart ? addDays(day, 1) : day;
+      newWeeks[newStartKey].staffing[newDay] = oldWeek.staffing[day];
+    });
+  });
+
+  if(new Date(state.currentWeek).getDay() === 0){
+    state.currentWeek = addDays(state.currentWeek, 1);
+  }
+
+  state.weeks = newWeeks;
+  state.__fixedMondayWeeks = true;
+}
+
 function saveState(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   if(window.db && window.SAFIA_PATH && firebaseStarted && !isRemoteUpdate && !isRendering){
@@ -281,6 +340,8 @@ function ensureWeek(shouldSave=true){
   if(shouldSave) saveState();
 }
 ensureWeek();
+
+
 
 function employee(id){ return state.employees.find(e=>e.id===id); }
 function overlap(a,b){ return Math.max(0, Math.min(a.end,b.end)-Math.max(a.start,b.start)); }
@@ -913,7 +974,7 @@ navButtons.forEach(n=>n.onclick=()=>{currentPage=n.dataset.page; render();});
 const roleSelect = document.getElementById("roleSelect");
 if(roleSelect){ roleSelect.value=state.role; roleSelect.onchange=e=>{state.role=e.target.value; render();}; }
 const weekSelect = document.getElementById("weekSelect");
-if(weekSelect){ weekSelect.onchange=e=>{state.currentWeek=e.target.value; ensureWeek(); render();}; }
+if(weekSelect){ weekSelect.onchange=e=>{state.currentWeek=e.target.value; fixOldSundayWeeks(); ensureWeek(); render();}; }
 const nextWeekBtn = document.getElementById("nextWeekBtn");
 if(nextWeekBtn) nextWeekBtn.onclick=createNextWeek;
 const prevWeekBtn = document.getElementById("prevWeekBtn");
