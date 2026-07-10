@@ -160,10 +160,30 @@ function createWeek(startKey, copyFromKey=null){
 
   if(copyFromKey && state.weeks[copyFromKey]){
     const oldDays = getWeekDays(copyFromKey).map(dateKey);
-    days.forEach((day,i)=>{
-      schedule[day] = (state.weeks[copyFromKey].schedule[oldDays[i]] || []).map(x => ({ ...x, day }));
+
+    days.forEach((day, i) => {
+      const oldItems =
+        state.weeks[copyFromKey].schedule?.[oldDays[i]] || [];
+
+      schedule[day] = oldItems
+      // Выходные в новую неделю не переносим
+        .filter(item => item.status !== "off")
+
+      // Не переносим удалённых сотрудников
+        .filter(item => state.employees.some(emp =>
+          emp.id === item.employeeId && emp.active
+        ))
+
+      // Новая неделя начинается как обычный график
+        .map(item => ({
+          employeeId: item.employeeId,
+          category: item.category,
+          shift: item.shift,
+          status: "work"
+        }));
     });
-  } else {
+  }
+  else {
     days.forEach(day => {
       state.employees.filter(e=>e.active).forEach(e => schedule[day].push({
         employeeId:e.id,
@@ -516,27 +536,256 @@ function renderOff(day){
 function renderDayoffs(){
   const el = document.getElementById("dayoffs");
   if(!el) return;
+
   const days = getWeekDays(state.currentWeek);
+
   const filteredEmployees = state.employees.filter(e => {
     if(!e.active) return false;
-    const searchOk = e.name.toLowerCase().includes(dayoffFilter.search.toLowerCase());
-    const categoryOk = dayoffFilter.category === "Все" || e.position === dayoffFilter.category;
-    const shiftOk = dayoffFilter.shift === "Все" || e.defaultShift === dayoffFilter.shift;
+
+    const searchOk =
+      e.name.toLowerCase().includes(
+        dayoffFilter.search.toLowerCase()
+      );
+
+    const categoryOk =
+      dayoffFilter.category === "Все" ||
+      e.position === dayoffFilter.category;
+
+    const shiftOk =
+      dayoffFilter.shift === "Все" ||
+      e.defaultShift === dayoffFilter.shift;
+
     return searchOk && categoryOk && shiftOk;
   });
+
   el.innerHTML = `
-    <div class="card"><h3>Фильтр выходных</h3>
+    <div class="card">
+      <h3>Очистка выходных</h3>
+
+      <p class="muted">
+        Удаляет только выходные выбранной недели.
+        Рабочие смены сотрудников не удаляются.
+      </p>
+
       <div class="filters">
-        <input placeholder="Поиск сотрудника" value="${dayoffFilter.search}" oninput="dayoffFilter.search=this.value;render()">
-        <select onchange="dayoffFilter.category=this.value;render()"><option>Все</option>${editableCategories.map(c=>`<option ${dayoffFilter.category===c?'selected':''}>${c}</option>`).join("")}</select>
-        <select onchange="dayoffFilter.shift=this.value;render()"><option>Все</option>${Object.keys(shiftTemplates).map(sh=>`<option ${dayoffFilter.shift===sh?'selected':''}>${sh}</option>`).join("")}</select>
-        <button class="secondary" onclick="selectFilteredDayoffEmployees()">Выбрать всех</button>
-        <button class="secondary" onclick="clearDayoffFilters()">Сбросить</button>
+        <button
+          class="danger"
+          onclick="confirmClearDayoffs('Все')"
+        >
+          Очистить все выходные
+        </button>
+
+        ${editableCategories.map(category => `
+          <button
+            class="secondary"
+            onclick="confirmClearDayoffs('${category}')"
+          >
+            Очистить: ${category}
+          </button>
+        `).join("")}
+
+        <button
+            class="secondary"
+            onclick="cleanupDeletedEmployees()"
+        >
+            Очистить пустые записи
+        </button>
       </div>
     </div>
-    <div class="card"><h3>Поставить выходной</h3>
-      <div class="grid grid2"><div><b>Сотрудники (${filteredEmployees.length})</b><div class="checks">${filteredEmployees.map(e=>`<label><input type="checkbox" class="offEmp" value="${e.id}"> ${shortName(e.name)} <span class="muted">${e.position} · ${e.defaultShift}${serviceRatedCategories.includes(e.position) ? ` · рейтинг ${e.serviceScore}` : ""}</span></label>`).join("")}</div></div><div><b>Даты</b><div class="checks">${days.map((d,i)=>`<label><input type="checkbox" class="offDay" value="${dateKey(d)}"> ${daysShort[i]} ${formatDate(d)}</label>`).join("")}</div></div></div><br><button onclick="massDayoff()">Поставить выходной</button></div>`;
+
+    <div class="card">
+      <h3>Фильтр выходных</h3>
+
+      <div class="filters">
+        <input
+          placeholder="Поиск сотрудника"
+          value="${dayoffFilter.search}"
+          oninput="
+            dayoffFilter.search = this.value;
+            render();
+          "
+        >
+
+        <select
+          onchange="
+            dayoffFilter.category = this.value;
+            render();
+          "
+        >
+          <option>Все</option>
+
+          ${editableCategories.map(category => `
+            <option
+              ${dayoffFilter.category === category ? "selected" : ""}
+            >
+              ${category}
+            </option>
+          `).join("")}
+        </select>
+
+        <select
+          onchange="
+            dayoffFilter.shift = this.value;
+            render();
+          "
+        >
+          <option>Все</option>
+
+          ${Object.keys(shiftTemplates).map(shift => `
+            <option
+              ${dayoffFilter.shift === shift ? "selected" : ""}
+            >
+              ${shift}
+            </option>
+          `).join("")}
+        </select>
+
+        <button
+          class="secondary"
+          onclick="selectFilteredDayoffEmployees()"
+        >
+          Выбрать всех
+        </button>
+
+        <button
+          class="secondary"
+          onclick="clearDayoffFilters()"
+        >
+          Сбросить
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Поставить выходной</h3>
+
+      <div class="grid grid2">
+        <div>
+          <b>Сотрудники (${filteredEmployees.length})</b>
+
+          <div class="checks">
+            ${filteredEmployees.map(employeeItem => `
+              <label>
+                <input
+                  type="checkbox"
+                  class="offEmp"
+                  value="${employeeItem.id}"
+                >
+
+                ${shortName(employeeItem.name)}
+
+                <span class="muted">
+                  ${employeeItem.position}
+                  · ${employeeItem.defaultShift}
+
+                  ${
+                    serviceRatedCategories.includes(
+                      employeeItem.position
+                    )
+                      ? ` · рейтинг ${employeeItem.serviceScore ?? 50}`
+                      : ""
+                  }
+                </span>
+              </label>
+            `).join("")}
+          </div>
+        </div>
+
+        <div>
+          <b>Даты</b>
+
+          <div class="checks">
+            ${days.map((day, index) => `
+              <label>
+                <input
+                  type="checkbox"
+                  class="offDay"
+                  value="${dateKey(day)}"
+                >
+
+                ${daysShort[index]} ${formatDate(day)}
+              </label>
+            `).join("")}
+          </div>
+        </div>
+      </div>
+
+      <br>
+
+      <button onclick="massDayoff()">
+        Поставить выходной
+      </button>
+    </div>
+  `;
 }
+
+function confirmClearDayoffs(category){
+  const message =
+    category === "Все"
+      ? "Удалить все выходные на выбранной неделе?"
+      : `Удалить все выходные у категории «${category}»?`;
+
+  if(confirm(message)){
+    clearDayoffs(category);
+  }
+}
+
+function clearDayoffs(category = "Все"){
+  const days = getWeekDays(state.currentWeek).map(dateKey);
+
+  let removed = 0;
+
+  days.forEach(day => {
+    const currentItems = dayItems(day);
+
+    state.weeks[state.currentWeek].schedule[day] =
+      currentItems.filter(item => {
+        if(item.status !== "off"){
+          return true;
+        }
+
+        const emp = employee(item.employeeId);
+
+        // Удаляем старые пустые записи
+        if(!emp){
+          removed++;
+          return false;
+        }
+
+        // Очистить все выходные
+        if(category === "Все"){
+          removed++;
+          return false;
+        }
+
+        // Очистить только выбранную категорию
+        if(emp.position === category){
+          removed++;
+          return false;
+        }
+
+        return true;
+      });
+  });
+
+  state.weeks[state.currentWeek].history =
+    state.weeks[state.currentWeek].history || [];
+
+  state.weeks[state.currentWeek].history.push(
+    category === "Все"
+      ? `Очищены все выходные недели: ${removed}`
+      : `Очищены выходные категории ${category}: ${removed}`
+  );
+
+  render();
+
+  toast(
+    category === "Все"
+      ? "Все выходные очищены"
+      : `Выходные категории «${category}» очищены`
+  );
+}
+
 function selectFilteredDayoffEmployees(){ document.querySelectorAll(".offEmp").forEach(ch=>ch.checked=true); }
 function clearDayoffFilters(){ dayoffFilter = { search:"", category:"Все", shift:"Все" }; render(); }
 
@@ -890,18 +1139,218 @@ function massDayoff(){
   state.weeks[state.currentWeek].history.push(`Поставлены выходные: ${emps.length} сотрудников, ${days.length} дат`);
   render(); toast("Выходные поставлены");
 }
+
+function clearDayoffs(category = "Все"){
+  const days = getWeekDays(state.currentWeek).map(dateKey);
+
+  let removed = 0;
+
+  days.forEach(day => {
+    const before = dayItems(day).length;
+
+    state.weeks[state.currentWeek].schedule[day] =
+      dayItems(day).filter(item => {
+        if(item.status !== "off") return true;
+
+        const emp = employee(item.employeeId);
+        if(!emp) return false;
+
+        if(category === "Все") return false;
+
+        return emp.position !== category;
+      });
+
+    removed +=
+      before -
+      state.weeks[state.currentWeek].schedule[day].length;
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    category === "Все"
+      ? `Очищены все выходные недели: ${removed}`
+      : `Очищены выходные категории ${category}: ${removed}`
+  );
+
+  render();
+  toast(
+    category === "Все"
+      ? "Все выходные недели очищены"
+      : `Выходные категории «${category}» очищены`
+  );
+}
+
+function confirmClearDayoffs(category){
+  const text =
+    category === "Все"
+      ? "Удалить все выходные на выбранной неделе?"
+      : `Удалить все выходные у категории «${category}»?`;
+
+  if(confirm(text)){
+    clearDayoffs(category);
+  }
+}
+
 function setNeed(day,cat,sh,val){
   if(!state.weeks[state.currentWeek].staffing[day]) state.weeks[state.currentWeek].staffing[day] = blankStaffing();
   state.weeks[state.currentWeek].staffing[day][cat][sh]=Number(val);
   render();
 }
 function addEmployee(){
-  const name=document.getElementById("newName").value.trim(); const position=document.getElementById("newPos").value; const defaultShift=document.getElementById("newShift").value;
-  if(!name) return toast("Введите ФИО");
-  state.employees.push({id:"e"+Date.now(),name,position,defaultShift,skills:[position],universal:false,active:true,serviceScore:serviceRatedCategories.includes(position)?50:null});
-  render(); toast("Сотрудник добавлен");
+  const name =
+    document.getElementById("newName").value.trim();
+
+  const position =
+    document.getElementById("newPos").value;
+
+  const defaultShift =
+    document.getElementById("newShift").value;
+
+  if(!name){
+    return toast("Введите ФИО");
+  }
+
+  const duplicate = state.employees.some(emp =>
+    emp.name.trim().toLowerCase() === name.toLowerCase()
+  );
+
+  if(duplicate){
+    return toast("Такой сотрудник уже существует");
+  }
+
+  const newEmployee = {
+    id: "e" + Date.now(),
+    name,
+    position,
+    defaultShift,
+    skills: [position],
+    universal: false,
+    active: true,
+
+    // Рейтинг нужен только этим категориям
+    serviceScore:
+      position === "Продавец" ||
+      position === "Официант"
+        ? 50
+        : null
+  };
+
+  state.employees.push(newEmployee);
+
+  // Добавляем сотрудника во все дни текущей недели
+  const currentDays =
+    getWeekDays(state.currentWeek).map(dateKey);
+
+  currentDays.forEach(day => {
+    if(!state.weeks[state.currentWeek].schedule[day]){
+      state.weeks[state.currentWeek].schedule[day] = [];
+    }
+
+    const alreadyExists =
+      state.weeks[state.currentWeek].schedule[day].some(item =>
+        item.employeeId === newEmployee.id
+      );
+
+    if(!alreadyExists){
+      state.weeks[state.currentWeek].schedule[day].push({
+        employeeId: newEmployee.id,
+        category: newEmployee.position,
+        shift: newEmployee.defaultShift,
+        status: "work"
+      });
+    }
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(newEmployee.name)} добавлен в список сотрудников и график недели`
+  );
+
+  render();
+  toast("Сотрудник добавлен в текущий график");
 }
-function removeEmployee(id){ if(confirm("Удалить сотрудника?")){ state.employees = state.employees.filter(e=>e.id!==id); render(); } }
+function removeEmployee(id){
+  const emp = employee(id);
+
+  if(!emp){
+    return toast("Сотрудник не найден");
+  }
+
+  const approved = confirm(
+    `Удалить сотрудника ${shortName(emp.name)}?\n\n` +
+    `Он будет удалён из:\n` +
+    `• списка сотрудников;\n` +
+    `• всех недельных графиков;\n` +
+    `• выходных;\n` +
+    `• посещаемости.`
+  );
+
+  if(!approved) return;
+
+  // Удаляем назначения из всех недель
+  Object.values(state.weeks || {}).forEach(week => {
+    Object.keys(week.schedule || {}).forEach(day => {
+      week.schedule[day] =
+        (week.schedule[day] || []).filter(item =>
+          item.employeeId !== id &&
+          item.replacementFor !== id
+        );
+    });
+
+    // Удаляем посещаемость сотрудника
+    if(week.attendance){
+      Object.keys(week.attendance).forEach(key => {
+        const record = week.attendance[key];
+
+        if(
+          record?.empId === id ||
+          record?.replacementFor === id
+        ){
+          delete week.attendance[key];
+        }
+      });
+    }
+
+    week.history = week.history || [];
+    week.history.push(
+      `${shortName(emp.name)} полностью удалён из графиков`
+    );
+  });
+
+  // Удаляем сотрудника из общего списка
+  state.employees =
+    state.employees.filter(item => item.id !== id);
+
+  render();
+  toast("Сотрудник полностью удалён");
+}
+function cleanupDeletedEmployees(){
+  const existingIds =
+    new Set(
+      state.employees
+        .filter(emp => emp.active)
+        .map(emp => emp.id)
+    );
+
+  let removed = 0;
+
+  Object.values(state.weeks || {}).forEach(week => {
+    Object.keys(week.schedule || {}).forEach(day => {
+      const before =
+        (week.schedule[day] || []).length;
+
+      week.schedule[day] =
+        (week.schedule[day] || []).filter(item =>
+          existingIds.has(item.employeeId)
+        );
+
+      removed +=
+        before - week.schedule[day].length;
+    });
+  });
+
+  saveState();
+  render();
+  toast(`Удалено пустых записей: ${removed}`);
+}
 function removeAssignment(day, empId, category, shift){
   const before = dayItems(day).length;
   state.weeks[state.currentWeek].schedule[day] = dayItems(day).filter(i => !(i.employeeId === empId && i.category === category && i.shift === shift && isWorkItem(i)));
