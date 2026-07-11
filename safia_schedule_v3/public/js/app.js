@@ -1471,7 +1471,55 @@ function massDayoff(){
   render(); toast("Выходные поставлены");
 }
 
+function clearDayoffs(category = "Все"){
+  const days = getWeekDays(state.currentWeek).map(dateKey);
 
+  let removed = 0;
+
+  days.forEach(day => {
+    const before = dayItems(day).length;
+
+    state.weeks[state.currentWeek].schedule[day] =
+      dayItems(day).filter(item => {
+        if(item.status !== "off") return true;
+
+        const emp = employee(item.employeeId);
+        if(!emp) return false;
+
+        if(category === "Все") return false;
+
+        return emp.position !== category;
+      });
+
+    removed +=
+      before -
+      state.weeks[state.currentWeek].schedule[day].length;
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    category === "Все"
+      ? `Очищены все выходные недели: ${removed}`
+      : `Очищены выходные категории ${category}: ${removed}`
+  );
+
+  render();
+  toast(
+    category === "Все"
+      ? "Все выходные недели очищены"
+      : `Выходные категории «${category}» очищены`
+  );
+}
+
+function confirmClearDayoffs(category){
+  const text =
+    category === "Все"
+      ? "Удалить все выходные на выбранной неделе?"
+      : `Удалить все выходные у категории «${category}»?`;
+
+  if(confirm(text)){
+    clearDayoffs(category);
+  }
+}
 
 function setNeed(day,cat,sh,val){
   if(!state.weeks[state.currentWeek].staffing[day]) state.weeks[state.currentWeek].staffing[day] = blankStaffing();
@@ -1974,117 +2022,68 @@ function exportExcel(){
   }, 1000);
 }
 
-function exportExcelByShifts(){
+function exportExcelByShift(shiftName){
+  if(!staffingBlocks[shiftName]){
+    return toast("Неизвестная смена");
+  }
+
   const days = getWeekDays(state.currentWeek);
   const dayKeys = days.map(dateKey);
+  const categoryOrder = [
+    "Менеджер",
+    "Продавец",
+    "Официант",
+    "Бариста",
+    "Кассир",
+    "Техничка",
+    "Морозильщик"
+  ];
 
-  function assignmentCoversShift(item, shiftName){
-    return (
+  function assignmentsFor(empId, day, category){
+    return dayItems(day).filter(item =>
+      item.employeeId === empId &&
       isWorkItem(item) &&
+      item.category === category &&
       coversShift(item, shiftName) > 0
     );
   }
 
-  function employeeHasDayOff(empId, day){
+  function hasDayOff(empId, day){
     return dayItems(day).some(item =>
       item.employeeId === empId &&
       item.status === "off"
     );
   }
 
-  function getAssignmentsForShift(empId, day, shiftName){
-    return dayItems(day).filter(item =>
-      item.employeeId === empId &&
-      assignmentCoversShift(item, shiftName)
-    );
-  }
-
-  function getEmployeesForShift(shiftName){
+  function rowsForCategory(category){
     return state.employees
-      .filter(emp => {
-        if(!emp.active) return false;
-
-        return dayKeys.some(day =>
-          getAssignmentsForShift(
-            emp.id,
-            day,
-            shiftName
-          ).length > 0
-        );
-      })
+      .filter(emp => emp.active)
+      .filter(emp =>
+        dayKeys.some(day => assignmentsFor(emp.id, day, category).length > 0)
+      )
       .sort((a, b) => {
-        const aItems = dayKeys.flatMap(day =>
-          getAssignmentsForShift(
-            a.id,
-            day,
-            shiftName
-          )
-        );
+        const aFirst = dayKeys
+          .flatMap(day => assignmentsFor(a.id, day, category))[0];
+        const bFirst = dayKeys
+          .flatMap(day => assignmentsFor(b.id, day, category))[0];
 
-        const bItems = dayKeys.flatMap(day =>
-          getAssignmentsForShift(
-            b.id,
-            day,
-            shiftName
-          )
-        );
+        const aStart = shiftTemplates[aFirst?.shift]?.start ?? 99;
+        const bStart = shiftTemplates[bFirst?.shift]?.start ?? 99;
+        if(aStart !== bStart) return aStart - bStart;
 
-        const aStart =
-          shiftTemplates[aItems[0]?.shift]?.start ??
-          shiftTemplates[a.defaultShift]?.start ??
-          99;
-
-        const bStart =
-          shiftTemplates[bItems[0]?.shift]?.start ??
-          shiftTemplates[b.defaultShift]?.start ??
-          99;
-
-        if(aStart !== bStart){
-          return aStart - bStart;
-        }
-
-        return a.name.localeCompare(
-          b.name,
-          "ru"
-        );
+        return a.name.localeCompare(b.name, "ru");
       });
   }
 
-  function cellForShift(emp, day, shiftName){
-    if(employeeHasDayOff(emp.id, day)){
+  function cellFor(emp, day, category){
+    if(hasDayOff(emp.id, day)){
       return `<td class="off"></td>`;
     }
 
-    const assignments =
-      getAssignmentsForShift(
-        emp.id,
-        day,
-        shiftName
-      );
-
+    const assignments = assignmentsFor(emp.id, day, category);
     if(!assignments.length){
       return `<td></td>`;
     }
-
-    /*
-      В одной смене может оказаться несколько
-      назначений сотрудника, поэтому выводим
-      их через перенос строки.
-    */
-    const text = assignments
-      .map(item => {
-        const category =
-          item.category || emp.position;
-
-        return `
-          ${shortName(emp.name)}
-          <br>
-          <span class="smallText">
-            ${category} · ${item.shift}
-          </span>
-        `;
-      })
-      .join("<hr>");
 
     const changed = assignments.some(item =>
       item.status === "changed" ||
@@ -2093,201 +2092,98 @@ function exportExcelByShifts(){
       item.shift !== emp.defaultShift
     );
 
-    return `
-      <td class="${changed ? "changed" : ""}">
-        ${text}
-      </td>
-    `;
+    const details = assignments.map(item =>
+      `<div><b>${shortName(emp.name)}</b><br><span class="smallText">${item.shift}</span></div>`
+    ).join('<hr>');
+
+    return `<td class="${changed ? "changed" : ""}">${details}</td>`;
   }
 
-  function shiftTable(shiftName){
-    const employees =
-      getEmployeesForShift(shiftName);
+  let bodyRows = "";
 
-    return `
-      <table>
-        <tr class="titleRow">
-          <td colspan="10">
-            Филиал Сергели — ${shiftName}
-          </td>
-        </tr>
+  categoryOrder.forEach(category => {
+    const employees = rowsForCategory(category);
+    if(!employees.length) return;
 
-        <tr class="dates">
-          <th>Основная должность</th>
-          <th>Основное время</th>
-          <th>ФИО</th>
-
-          ${days.map(day => `
-            <th>${formatDate(day)}</th>
-          `).join("")}
-        </tr>
-
-        <tr class="dates">
-          <th></th>
-          <th></th>
-          <th></th>
-
-          ${daysShort.map(dayName => `
-            <th>${dayName}</th>
-          `).join("")}
-        </tr>
-
-        ${employees.map(emp => `
-          <tr>
-            <td class="position">
-              ${emp.position}
-            </td>
-
-            <td class="time">
-              ${emp.defaultShift}
-            </td>
-
-            <td class="name">
-              ${shortName(emp.name)}
-            </td>
-
-            ${dayKeys.map(day =>
-              cellForShift(
-                emp,
-                day,
-                shiftName
-              )
-            ).join("")}
-          </tr>
-        `).join("")}
-      </table>
-
-      <br>
+    bodyRows += `
+      <tr class="categoryRow">
+        <td colspan="10">${category}</td>
+      </tr>
     `;
-  }
 
-  let html = `
+    employees.forEach(emp => {
+      const firstAssignment = dayKeys
+        .flatMap(day => assignmentsFor(emp.id, day, category))[0];
+      const displayShift = firstAssignment?.shift || emp.defaultShift;
+
+      bodyRows += `
+        <tr>
+          <td class="position">${category}</td>
+          <td class="time">${displayShift}</td>
+          <td class="name">${shortName(emp.name)}</td>
+          ${dayKeys.map(day => cellFor(emp, day, category)).join("")}
+        </tr>
+      `;
+    });
+  });
+
+  const shiftTitle = {
+    "1 смена": "1 смена · 08:00–16:00",
+    "2 смена": "2 смена · 16:00–23:00",
+    "3 смена": "3 смена · 23:00–08:00"
+  }[shiftName] || shiftName;
+
+  const html = `
     <html>
     <head>
       <meta charset="UTF-8">
-
       <style>
-        body {
-          font-family: "Times New Roman", serif;
-        }
-
-        table {
-          border-collapse: collapse;
-          width: 100%;
-          margin-bottom: 24px;
-          page-break-after: always;
-        }
-
-        th,
-        td {
-          border: 1px solid #333;
-          text-align: center;
-          vertical-align: middle;
-          height: 30px;
-          font-size: 11px;
-          padding: 4px;
-        }
-
-        .titleRow td {
-          height: 46px;
-          font-size: 18px;
-          font-weight: bold;
-          background: #ffffff;
-        }
-
-        .dates th {
-          background: #92d050;
-          font-weight: bold;
-        }
-
-        .position {
-          background: #92d050;
-          font-weight: bold;
-          width: 120px;
-        }
-
-        .time {
-          background: #e2f0d9;
-          font-weight: bold;
-          width: 100px;
-        }
-
-        .name {
-          width: 180px;
-          font-weight: bold;
-        }
-
-        .off {
-          background: #ff0000;
-          color: #ff0000;
-        }
-
-        .changed {
-          background: #ffff00;
-          color: #000000;
-          font-weight: bold;
-        }
-
-        .smallText {
-          font-size: 9px;
-          font-weight: normal;
-        }
-
-        hr {
-          border: 0;
-          border-top: 1px solid #999;
-          margin: 3px 0;
-        }
+        body{font-family:"Times New Roman",serif}
+        table{border-collapse:collapse;width:100%}
+        th,td{border:1px solid #333;text-align:center;vertical-align:middle;height:30px;font-size:11px;padding:4px}
+        .titleRow td{height:46px;font-size:18px;font-weight:bold;background:#fff}
+        .dates th{background:#92d050;font-weight:bold}
+        .categoryRow td{background:#d9ead3;font-size:14px;font-weight:bold;text-align:left;padding-left:10px}
+        .position{background:#92d050;font-weight:bold;width:120px}
+        .time{background:#e2f0d9;font-weight:bold;width:100px}
+        .name{width:180px;font-weight:bold}
+        .off{background:#ff0000;color:#ff0000}
+        .changed{background:#ffff00;color:#000;font-weight:bold}
+        .smallText{font-size:9px;font-weight:normal}
+        hr{border:0;border-top:1px solid #999;margin:3px 0}
       </style>
     </head>
-
     <body>
-      <h2 style="text-align:center;">
-        График по сменам
-        ${weekLabel(state.currentWeek)}
-      </h2>
-
-      <p style="
-        text-align:right;
-        font-weight:bold;
-      ">
-        Аюпов А __________
-      </p>
-  `;
-
-  Object.keys(staffingBlocks).forEach(
-    shiftName => {
-      html += shiftTable(shiftName);
-    }
-  );
-
-  html += `
+      <h2 style="text-align:center;">График ${shiftTitle} · ${weekLabel(state.currentWeek)}</h2>
+      <p style="text-align:right;font-weight:bold;">Аюпов А __________</p>
+      <table>
+        <tr class="titleRow"><td colspan="10">Филиал Сергели — ${shiftTitle}</td></tr>
+        <tr class="dates">
+          <th>Должность</th>
+          <th>Время</th>
+          <th>ФИО</th>
+          ${days.map(day => `<th>${formatDate(day)}</th>`).join("")}
+        </tr>
+        <tr class="dates">
+          <th></th><th></th><th></th>
+          ${daysShort.map(dayName => `<th>${dayName}</th>`).join("")}
+        </tr>
+        ${bodyRows || `<tr><td colspan="10">На этой смене сотрудников нет</td></tr>`}
+      </table>
     </body>
     </html>
   `;
 
-  const blob = new Blob(
-    [html],
-    {
-      type:
-        "application/vnd.ms-excel;charset=utf-8"
-    }
-  );
+  const blob = new Blob([html], {
+    type: "application/vnd.ms-excel;charset=utf-8"
+  });
 
-  const link =
-    document.createElement("a");
-
-  link.href =
-    URL.createObjectURL(blob);
-
-  link.download =
-    `grafik_po_smenam_${weekLabel(state.currentWeek)}.xls`;
-
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `grafik_${shiftName.replace(/\s+/g, "_")}_${weekLabel(state.currentWeek)}.xls`;
   link.click();
 
-  setTimeout(() => {
-    URL.revokeObjectURL(link.href);
-  }, 1000);
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 function toast(msg){ const t=document.getElementById("toast"); if(!t) return; t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
@@ -2304,13 +2200,15 @@ const prevWeekBtn = document.getElementById("prevWeekBtn");
 if(prevWeekBtn) prevWeekBtn.onclick=prevWeek;
 const excelBtn = document.getElementById("excelBtn");
 if(excelBtn) excelBtn.onclick=exportExcel;
-const excelShiftBtn =
-  document.getElementById("excelShiftBtn");
 
-if(excelShiftBtn){
-  excelShiftBtn.onclick =
-    exportExcelByShifts;
-}
+const excelShift1Btn = document.getElementById("excelShift1Btn");
+if(excelShift1Btn) excelShift1Btn.onclick = () => exportExcelByShift("1 смена");
+
+const excelShift2Btn = document.getElementById("excelShift2Btn");
+if(excelShift2Btn) excelShift2Btn.onclick = () => exportExcelByShift("2 смена");
+
+const excelShift3Btn = document.getElementById("excelShift3Btn");
+if(excelShift3Btn) excelShift3Btn.onclick = () => exportExcelByShift("3 смена");
 
 render({ save:false });
 setTimeout(startFirebaseSync, 200);
