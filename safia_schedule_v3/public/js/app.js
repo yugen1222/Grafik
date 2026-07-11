@@ -1039,59 +1039,390 @@ function renderHistory(){
   el.innerHTML = `<div class="card"><h3>История недели</h3>${week.history.map(h=>`<p>${h}</p>`).join("")}</div>`;
 }
 
-function openEmployeeDrawer(day, empId, category='', shift=''){
+function openEmployeeDrawer(day, empId, category = "", shift = ""){
   const emp = employee(empId);
+
   if(!emp) return;
-  const items = dayItems(day).filter(i=>i.employeeId===empId);
-  const hours = items.filter(i=>isWorkItem(i)).reduce((a,i)=>a+itemHours(i),0);
-  const allowedCategories = editableCategories.filter(c => canWorkCategory(emp, c));
-  const drawer=document.getElementById('drawer');
-  if(!drawer) return;
-  drawer.innerHTML = `
-    <div class="drawerHead"><div><h2>${shortName(emp.name)}</h2><div class="muted">${emp.position} · ${emp.defaultShift}</div></div><button class="drawerClose" onclick="closeDrawer()">✕</button></div>
-    <div class="infoGrid">
-      <div class="infoBox"><b>Дата</b><br>${day}</div>
-      <div class="infoBox"><b>Часы за день</b><br>${hours} / 17</div>
-      <div class="infoBox"><b>Навыки</b><br>${(emp.skills||[]).map(s=>`<i class="pill">${s}</i>`).join('') || 'Нет'}${emp.universal ? '<br><i class="pill">Универсал</i>' : ''}</div>
-      ${serviceRatedCategories.includes(emp.position) ? `<div class="infoBox"><b>Рейтинг сервиса</b><br><input type="number" min="0" max="100" value="${emp.serviceScore ?? 50}" onchange="setServiceScore('${emp.id}', this.value)"></div>` : ""}
-      <div class="infoBox"><b>Действия</b><br><br>
-        <label>Категория</label>
-        <select id="drawerCategory">${allowedCategories.map(c=>`<option ${c===category?'selected':''}>${c}</option>`).join('')}</select><br><br>
-        <label>Смена</label>
-        <select id="drawerShift">${Object.keys(shiftTemplates).map(s=>`<option ${s===shift?'selected':''}>${s}</option>`).join('')}</select><br><br>
-        <button onclick="changeFromDrawer('${day}','${empId}','${category}','${shift}')">Изменить</button>
-        <button class="secondary" onclick="makeOffFromDrawer('${day}','${empId}')">Поставить выходной</button>
-        <button class="danger" onclick="removeAssignment('${day}','${empId}','${category}','${shift}')">Удалить это назначение</button>
+
+  const items = dayItems(day).filter(i =>
+    i.employeeId === empId
+  );
+
+  const offItem = items.find(i =>
+    i.status === "off"
+  );
+
+  const workItem = items.find(i =>
+    isWorkItem(i)
+  );
+
+  const currentCategory =
+    workItem?.category ||
+    category ||
+    emp.position;
+
+  const currentShift =
+    workItem?.shift ||
+    shift ||
+    emp.defaultShift;
+
+  const hours = items
+    .filter(i => isWorkItem(i))
+    .reduce((sum, item) =>
+      sum + itemHours(item), 0
+    );
+
+  const allowedCategories =
+    editableCategories.filter(cat =>
+      canWorkCategory(emp, cat)
+    );
+
+  const drawer =
+    document.getElementById("drawer");
+
+  /*
+    Отдельное окно для выходного.
+  */
+  if(offItem){
+    drawer.innerHTML = `
+      <div class="drawerHead">
+        <div>
+          <h2>${shortName(emp.name)}</h2>
+          <div class="muted">
+            ${emp.position} · ${emp.defaultShift}
+          </div>
+        </div>
+
+        <button
+          class="drawerClose"
+          onclick="closeDrawer()"
+        >
+          ✕
+        </button>
       </div>
-    </div>`;
-  drawer.classList.add('open');
+
+      <div class="infoGrid">
+        <div class="infoBox">
+          <b>Дата</b><br>
+          ${day}
+        </div>
+
+        <div class="infoBox">
+          <b>Статус</b><br>
+          🏖 Выходной
+        </div>
+
+        <div class="infoBox">
+          <b>Действия</b><br><br>
+
+          <button
+            onclick="restoreFromDayoff('${day}','${empId}')"
+          >
+            Вернуть в график
+          </button>
+        </div>
+      </div>
+    `;
+
+    drawer.classList.add("open");
+    return;
+  }
+
+  /*
+    Обычное окно рабочего назначения.
+  */
+  drawer.innerHTML = `
+    <div class="drawerHead">
+      <div>
+        <h2>${shortName(emp.name)}</h2>
+        <div class="muted">
+          ${emp.position} · ${emp.defaultShift}
+        </div>
+      </div>
+
+      <button
+        class="drawerClose"
+        onclick="closeDrawer()"
+      >
+        ✕
+      </button>
+    </div>
+
+    <div class="infoGrid">
+      <div class="infoBox">
+        <b>Дата</b><br>
+        ${day}
+      </div>
+
+      <div class="infoBox">
+        <b>Часы за день</b><br>
+        ${hours} / 17
+      </div>
+
+      <div class="infoBox">
+        <b>Навыки</b><br>
+        ${
+          (emp.skills || [])
+            .map(skill =>
+              `<i class="pill">${skill}</i>`
+            )
+            .join("") || "Нет"
+        }
+      </div>
+
+      ${
+        serviceRatedCategories.includes(emp.position)
+          ? `
+            <div class="infoBox">
+              <b>Рейтинг сервиса</b><br>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value="${emp.serviceScore ?? 50}"
+                onchange="
+                  updateServiceScore(
+                    '${empId}',
+                    this.value
+                  )
+                "
+              >
+            </div>
+          `
+          : ""
+      }
+
+      <div class="infoBox">
+        <b>Действия</b><br><br>
+
+        <label>Категория</label>
+
+        <select id="drawerCategory">
+          ${allowedCategories.map(cat => `
+            <option
+              ${cat === currentCategory ? "selected" : ""}
+            >
+              ${cat}
+            </option>
+          `).join("")}
+        </select>
+
+        <br><br>
+
+        <label>Смена</label>
+
+        <select id="drawerShift">
+          ${Object.keys(shiftTemplates).map(itemShift => `
+            <option
+              ${itemShift === currentShift ? "selected" : ""}
+            >
+              ${itemShift}
+            </option>
+          `).join("")}
+        </select>
+
+        <br><br>
+
+        <button
+          onclick="
+            changeFromDrawer(
+              '${day}',
+              '${empId}',
+              '${currentCategory}',
+              '${currentShift}'
+            )
+          "
+        >
+          Изменить
+        </button>
+
+        <button
+          class="secondary"
+          onclick="
+            makeOffFromDrawer(
+              '${day}',
+              '${empId}'
+            )
+          "
+        >
+          Поставить выходной
+        </button>
+
+        ${
+          workItem
+            ? `
+              <button
+                class="danger"
+                onclick="
+                  removeAssignment(
+                    '${day}',
+                    '${empId}',
+                    '${currentCategory}',
+                    '${currentShift}'
+                  )
+                "
+              >
+                Удалить это назначение
+              </button>
+            `
+            : `
+              <button
+                onclick="
+                  changeFromDrawer(
+                    '${day}',
+                    '${empId}',
+                    '',
+                    ''
+                  )
+                "
+              >
+                Добавить в график
+              </button>
+            `
+        }
+      </div>
+    </div>
+  `;
+
+  drawer.classList.add("open");
 }
 function closeDrawer(){ const d=document.getElementById('drawer'); if(d) d.classList.remove('open'); }
-function changeFromDrawer(day, empId, category, oldShift){
+function changeFromDrawer(day, empId, oldCategory = "", oldShift = ""){
   const emp = employee(empId);
-  const newShift=document.getElementById('drawerShift').value;
-  const newCategory=document.getElementById('drawerCategory').value;
-  if(!canWorkCategory(emp, newCategory)) return toast("У сотрудника нет такого навыка");
-  const item=dayItems(day).find(i=>i.employeeId===empId && i.category===category && i.shift===oldShift && isWorkItem(i)) || dayItems(day).find(i=>i.employeeId===empId && isWorkItem(i));
-  if(!item) return toast("Назначение не найдено");
-  if(hasTimeConflict(day, empId, newShift, item)) return toast("Нельзя: сотрудник уже работает в это время");
-  const futureHours = totalHoursForEmployee(day, empId, item) + (shiftTemplates[newShift]?.hours || 0);
-  if(futureHours > 17) return toast(`Нельзя: получится ${futureHours} часов. Максимум 17.`);
-  item.shift=newShift;
-  item.category=newCategory;
-  item.bySkill = newCategory !== emp.position;
-  item.status = (newShift !== emp.defaultShift || newCategory !== emp.position) ? 'changed' : 'work';
+
+  if(!emp){
+    return toast("Сотрудник не найден");
+  }
+
+  const newShift =
+    document.getElementById("drawerShift")?.value ||
+    emp.defaultShift;
+
+  const newCategory =
+    document.getElementById("drawerCategory")?.value ||
+    emp.position;
+
+  if(!canWorkCategory(emp, newCategory)){
+    return toast("У сотрудника нет навыка для этой категории");
+  }
+
+  let item = dayItems(day).find(i =>
+    i.employeeId === empId &&
+    i.category === oldCategory &&
+    i.shift === oldShift &&
+    isWorkItem(i)
+  );
+
+  if(!item){
+    item = dayItems(day).find(i =>
+      i.employeeId === empId &&
+      isWorkItem(i)
+    );
+  }
+
+  /*
+    Если рабочего назначения нет —
+    создаём его заново.
+  */
+  if(!item){
+    if(hasTimeConflict(day, empId, newShift)){
+      return toast("Сотрудник уже работает в это время");
+    }
+
+    removeOffForEmployee(day, empId);
+
+    state.weeks[state.currentWeek].schedule[day].push({
+      employeeId: empId,
+      category: newCategory,
+      shift: newShift,
+      status:
+        newCategory !== emp.position ||
+        newShift !== emp.defaultShift
+          ? "changed"
+          : "work"
+    });
+
+    state.weeks[state.currentWeek].history.push(
+      `${shortName(emp.name)} добавлен: ${newCategory}, ${newShift}, ${day}`
+    );
+
+    closeDrawer();
+    render();
+    toast("Сотрудник добавлен в график");
+    return;
+  }
+
+  if(hasTimeConflict(day, empId, newShift, item)){
+    return toast("Сотрудник уже работает в это время");
+  }
+
+  item.category = newCategory;
+  item.shift = newShift;
+
+  item.status =
+    newCategory !== emp.position ||
+    newShift !== emp.defaultShift
+      ? "changed"
+      : "work";
+
   removeOffForEmployee(day, empId);
-  state.weeks[state.currentWeek].history.push(`${shortName(emp.name)}: изменено на ${newCategory}, ${newShift}`);
-  closeDrawer(); render(); toast('Изменение сохранено');
-  const msg = overstaffMessage(day, newCategory, Object.keys(staffingBlocks).find(sh => coversShift(item, sh) > 0) || "1 смена");
-  if(msg) toast(msg);
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(emp.name)}: изменено на ${newCategory}, ${newShift}`
+  );
+
+  closeDrawer();
+  render();
+  toast("Изменение сохранено");
 }
 function makeOffFromDrawer(day, empId){
   state.weeks[state.currentWeek].schedule[day]=dayItems(day).filter(i=>i.employeeId!==empId);
   state.weeks[state.currentWeek].schedule[day].push({employeeId:empId,status:'off'});
   state.weeks[state.currentWeek].history.push(`${shortName(employee(empId).name)}: выходной ${day}`);
   closeDrawer(); render(); toast('Выходной поставлен');
+}
+function restoreFromDayoff(day, empId){
+  const emp = employee(empId);
+
+  if(!emp){
+    return toast("Сотрудник не найден");
+  }
+
+  /*
+    Удаляем красную запись «Выходной».
+  */
+  state.weeks[state.currentWeek].schedule[day] =
+    dayItems(day).filter(item =>
+      !(
+        item.employeeId === empId &&
+        item.status === "off"
+      )
+    );
+
+  /*
+    Проверяем, нет ли уже рабочей карточки.
+  */
+  const alreadyWorking = dayItems(day).some(item =>
+    item.employeeId === empId &&
+    isWorkItem(item)
+  );
+
+  if(!alreadyWorking){
+    state.weeks[state.currentWeek].schedule[day].push({
+      employeeId: empId,
+      category: emp.position,
+      shift: emp.defaultShift,
+      status: "work"
+    });
+  }
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(emp.name)} возвращён из выходного в график ${day}`
+  );
+
+  closeDrawer();
+  render();
+  toast("Сотрудник возвращён в график");
 }
 function quickAdd(day){
   const text = prompt("Введите часть имени сотрудника:");
@@ -1387,18 +1718,309 @@ function prevWeek(){ const s=new Date(state.currentWeek); s.setDate(s.getDate()-
 function exportExcel(){
   const days = getWeekDays(state.currentWeek);
   const dayKeys = days.map(dateKey);
-  function timeSortValue(time){ return shiftTemplates[time]?.start ?? 99; }
-  function getWorkForCategory(emp, day, cat){ return dayItems(day).filter(i=>i.employeeId===emp.id && isWorkItem(i) && i.category===cat); }
-  function hasAssignmentInCategory(emp, cat){ return dayKeys.some(day=>dayItems(day).some(i=>i.employeeId===emp.id && isWorkItem(i) && i.category===cat)); }
-  function rowTime(emp, cat){ const assigned = dayKeys.flatMap(day=>getWorkForCategory(emp, day, cat)).find(i=>i.shift); return assigned?.shift || emp.defaultShift; }
-  function cellFor(emp, day, cat){
-    const items = dayItems(day).filter(i=>i.employeeId===emp.id);
-    if(items.find(i=>i.status==='off')) return `<td class="off"></td>`;
-    const works = getWorkForCategory(emp, day, cat);
-    if(!works.length) return `<td></td>`;
-    const changed = works.some(i=>i.status==='changed' || i.bySkill || i.category !== emp.position || i.shift !== emp.defaultShift);
-    return `<td class="${changed?'changed':''}">${shortName(emp.name)}</td>`;
+
+  function timeSortValue(time){
+    return shiftTemplates[time]?.start ?? 99;
   }
+
+  function employeeAssignments(emp, day){
+    return dayItems(day).filter(item =>
+      item.employeeId === emp.id &&
+      isWorkItem(item)
+    );
+  }
+
+  function hasDayOff(emp, day){
+    return dayItems(day).some(item =>
+      item.employeeId === emp.id &&
+      item.status === "off"
+    );
+  }
+
+  /*
+    Создаём отдельные строки:
+
+    1. Основная должность + основная смена.
+    2. Дополнительные строки только для временных назначений.
+  */
+  function buildRowsForCategory(category){
+    const rows = [];
+
+    state.employees
+      .filter(emp => emp.active)
+      .forEach(emp => {
+        const baseKey =
+          `${emp.position}|||${emp.defaultShift}`;
+
+        const variants = new Map();
+
+        /*
+          Основная строка нужна только в таблице
+          основной категории сотрудника.
+        */
+        if(emp.position === category){
+          variants.set(baseKey, {
+            emp,
+            category: emp.position,
+            shift: emp.defaultShift,
+            isBase: true
+          });
+        }
+
+        /*
+          Ищем временные назначения за неделю.
+        */
+        dayKeys.forEach(day => {
+          employeeAssignments(emp, day).forEach(item => {
+            if(item.category !== category) return;
+
+            const key =
+              `${item.category}|||${item.shift}`;
+
+            if(!variants.has(key)){
+              variants.set(key, {
+                emp,
+                category: item.category,
+                shift: item.shift,
+                isBase:
+                  item.category === emp.position &&
+                  item.shift === emp.defaultShift
+              });
+            }
+          });
+        });
+
+        variants.forEach(row => rows.push(row));
+      });
+
+    return rows.sort((a, b) => {
+      const timeDiff =
+        timeSortValue(a.shift) -
+        timeSortValue(b.shift);
+
+      if(timeDiff !== 0) return timeDiff;
+
+      return a.emp.name.localeCompare(
+        b.emp.name,
+        "ru"
+      );
+    });
+  }
+
+  function cellForRow(row, day){
+    const emp = row.emp;
+
+    /*
+      Красный выходной показываем только
+      в основной строке сотрудника.
+    */
+    if(
+      row.isBase &&
+      hasDayOff(emp, day)
+    ){
+      return `<td class="off"></td>`;
+    }
+
+    const assignments =
+      employeeAssignments(emp, day);
+
+    const exactAssignment =
+      assignments.find(item =>
+        item.category === row.category &&
+        item.shift === row.shift
+      );
+
+    /*
+      В этой строке на этот день
+      сотрудник не работает.
+    */
+    if(!exactAssignment){
+      return `<td></td>`;
+    }
+
+    const changed =
+      exactAssignment.status === "changed" ||
+      exactAssignment.category !== emp.position ||
+      exactAssignment.shift !== emp.defaultShift;
+
+    return `
+      <td class="${changed ? "changed" : ""}">
+        ${shortName(emp.name)}
+      </td>
+    `;
+  }
+
+  function tableBlock(category){
+    const rows =
+      buildRowsForCategory(category);
+
+    return `
+      <table>
+        <tr class="titleRow">
+          <td colspan="10">
+            Филиал Сергели — ${category}
+          </td>
+        </tr>
+
+        <tr class="dates">
+          <th>Должность</th>
+          <th>Время</th>
+          <th>ФИО</th>
+
+          ${days.map(day => `
+            <th>${formatDate(day)}</th>
+          `).join("")}
+        </tr>
+
+        <tr class="dates">
+          <th></th>
+          <th></th>
+          <th></th>
+
+          ${daysShort.map(dayName => `
+            <th>${dayName}</th>
+          `).join("")}
+        </tr>
+
+        ${rows.map(row => `
+          <tr>
+            <td class="position">
+              ${row.category}
+            </td>
+
+            <td class="time">
+              ${row.shift}
+            </td>
+
+            <td class="name">
+              ${shortName(row.emp.name)}
+            </td>
+
+            ${dayKeys
+              .map(day => cellForRow(row, day))
+              .join("")}
+          </tr>
+        `).join("")}
+      </table>
+
+      <br>
+    `;
+  }
+
+  let html = `
+    <html>
+    <head>
+      <meta charset="UTF-8">
+
+      <style>
+        body {
+          font-family: "Times New Roman", serif;
+        }
+
+        table {
+          border-collapse: collapse;
+          width: 100%;
+          margin-bottom: 24px;
+          page-break-after: always;
+        }
+
+        th,
+        td {
+          border: 1px solid #333;
+          text-align: center;
+          vertical-align: middle;
+          height: 28px;
+          font-size: 12px;
+          padding: 4px;
+        }
+
+        .titleRow td {
+          height: 46px;
+          font-size: 18px;
+          font-weight: bold;
+          background: #ffffff;
+        }
+
+        .dates th {
+          background: #92d050;
+          font-weight: bold;
+        }
+
+        .position {
+          background: #92d050;
+          font-weight: bold;
+          width: 120px;
+        }
+
+        .time {
+          background: #e2f0d9;
+          font-weight: bold;
+          width: 95px;
+        }
+
+        .name {
+          width: 170px;
+          font-weight: bold;
+        }
+
+        .off {
+          background: #ff0000;
+          color: #ff0000;
+        }
+
+        .changed {
+          background: #ffff00;
+          color: #000000;
+          font-weight: bold;
+        }
+      </style>
+    </head>
+
+    <body>
+      <h2 style="text-align:center;">
+        График ${weekLabel(state.currentWeek)}
+      </h2>
+
+      <p style="
+        text-align:right;
+        font-weight:bold;
+      ">
+        Аюпов А __________
+      </p>
+  `;
+
+  editableCategories.forEach(category => {
+    html += tableBlock(category);
+  });
+
+  html += `
+    </body>
+    </html>
+  `;
+
+  const blob = new Blob(
+    [html],
+    {
+      type:
+        "application/vnd.ms-excel;charset=utf-8"
+    }
+  );
+
+  const link =
+    document.createElement("a");
+
+  link.href =
+    URL.createObjectURL(blob);
+
+  link.download =
+    `grafik_print_${weekLabel(state.currentWeek)}.xls`;
+
+  link.click();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(link.href);
+  }, 1000);
+}
   function tableBlock(cat){
     const rows = state.employees.filter(emp=>emp.active && (emp.position===cat || hasAssignmentInCategory(emp, cat))).sort((a,b)=>{
       const t = timeSortValue(rowTime(a,cat))-timeSortValue(rowTime(b,cat));
