@@ -1471,55 +1471,7 @@ function massDayoff(){
   render(); toast("Выходные поставлены");
 }
 
-function clearDayoffs(category = "Все"){
-  const days = getWeekDays(state.currentWeek).map(dateKey);
 
-  let removed = 0;
-
-  days.forEach(day => {
-    const before = dayItems(day).length;
-
-    state.weeks[state.currentWeek].schedule[day] =
-      dayItems(day).filter(item => {
-        if(item.status !== "off") return true;
-
-        const emp = employee(item.employeeId);
-        if(!emp) return false;
-
-        if(category === "Все") return false;
-
-        return emp.position !== category;
-      });
-
-    removed +=
-      before -
-      state.weeks[state.currentWeek].schedule[day].length;
-  });
-
-  state.weeks[state.currentWeek].history.push(
-    category === "Все"
-      ? `Очищены все выходные недели: ${removed}`
-      : `Очищены выходные категории ${category}: ${removed}`
-  );
-
-  render();
-  toast(
-    category === "Все"
-      ? "Все выходные недели очищены"
-      : `Выходные категории «${category}» очищены`
-  );
-}
-
-function confirmClearDayoffs(category){
-  const text =
-    category === "Все"
-      ? "Удалить все выходные на выбранной неделе?"
-      : `Удалить все выходные у категории «${category}»?`;
-
-  if(confirm(text)){
-    clearDayoffs(category);
-  }
-}
 
 function setNeed(day,cat,sh,val){
   if(!state.weeks[state.currentWeek].staffing[day]) state.weeks[state.currentWeek].staffing[day] = blankStaffing();
@@ -2020,23 +1972,6 @@ function exportExcel(){
   setTimeout(() => {
     URL.revokeObjectURL(link.href);
   }, 1000);
-}
-  function tableBlock(cat){
-    const rows = state.employees.filter(emp=>emp.active && (emp.position===cat || hasAssignmentInCategory(emp, cat))).sort((a,b)=>{
-      const t = timeSortValue(rowTime(a,cat))-timeSortValue(rowTime(b,cat));
-      if(t!==0) return t;
-      return a.name.localeCompare(b.name, 'ru');
-    });
-    return `<table><tr class="titleRow"><td colspan="10">Филиал Сергели — ${cat}</td></tr><tr class="dates"><th>Должность</th><th>Время</th><th>ФИО</th>${days.map(d=>`<th>${formatDate(d)}</th>`).join('')}</tr><tr class="dates"><th></th><th></th><th></th>${daysShort.map(d=>`<th>${d}</th>`).join('')}</tr>${rows.map(emp=>`<tr><td class="position">${cat}</td><td class="time">${rowTime(emp,cat)}</td><td class="name">${shortName(emp.name)}</td>${dayKeys.map(day=>cellFor(emp,day,cat)).join('')}</tr>`).join('')}</table><br>`;
-  }
-  let html = `<html><head><meta charset="UTF-8"><style>body{font-family:"Times New Roman",serif}table{border-collapse:collapse;width:100%;margin-bottom:24px;page-break-after:always}th,td{border:1px solid #333;text-align:center;vertical-align:middle;height:28px;font-size:12px;padding:4px}.titleRow td{height:46px;font-size:18px;font-weight:bold;background:#fff}.dates th{background:#92d050;font-weight:bold}.position{background:#92d050;font-weight:bold;width:120px}.time{background:#e2f0d9;font-weight:bold;width:95px}.name{width:170px;font-weight:bold}.off{background:#ff0000;color:#ff0000}.changed{background:#ffff00;color:#000;font-weight:bold}</style></head><body><h2 style="text-align:center;">График ${weekLabel(state.currentWeek)}</h2><p style="text-align:right;font-weight:bold;">Аюпов А __________</p>`;
-  editableCategories.forEach(cat=>{ html += tableBlock(cat); });
-  html += `</body></html>`;
-  const blob = new Blob([html], { type:'application/vnd.ms-excel;charset=utf-8' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = `grafik_print_${weekLabel(state.currentWeek)}.xls`;
-  link.click();
 }
 function toast(msg){ const t=document.getElementById("toast"); if(!t) return; t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
 
