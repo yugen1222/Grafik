@@ -1973,6 +1973,323 @@ function exportExcel(){
     URL.revokeObjectURL(link.href);
   }, 1000);
 }
+
+function exportExcelByShifts(){
+  const days = getWeekDays(state.currentWeek);
+  const dayKeys = days.map(dateKey);
+
+  function assignmentCoversShift(item, shiftName){
+    return (
+      isWorkItem(item) &&
+      coversShift(item, shiftName) > 0
+    );
+  }
+
+  function employeeHasDayOff(empId, day){
+    return dayItems(day).some(item =>
+      item.employeeId === empId &&
+      item.status === "off"
+    );
+  }
+
+  function getAssignmentsForShift(empId, day, shiftName){
+    return dayItems(day).filter(item =>
+      item.employeeId === empId &&
+      assignmentCoversShift(item, shiftName)
+    );
+  }
+
+  function getEmployeesForShift(shiftName){
+    return state.employees
+      .filter(emp => {
+        if(!emp.active) return false;
+
+        return dayKeys.some(day =>
+          getAssignmentsForShift(
+            emp.id,
+            day,
+            shiftName
+          ).length > 0
+        );
+      })
+      .sort((a, b) => {
+        const aItems = dayKeys.flatMap(day =>
+          getAssignmentsForShift(
+            a.id,
+            day,
+            shiftName
+          )
+        );
+
+        const bItems = dayKeys.flatMap(day =>
+          getAssignmentsForShift(
+            b.id,
+            day,
+            shiftName
+          )
+        );
+
+        const aStart =
+          shiftTemplates[aItems[0]?.shift]?.start ??
+          shiftTemplates[a.defaultShift]?.start ??
+          99;
+
+        const bStart =
+          shiftTemplates[bItems[0]?.shift]?.start ??
+          shiftTemplates[b.defaultShift]?.start ??
+          99;
+
+        if(aStart !== bStart){
+          return aStart - bStart;
+        }
+
+        return a.name.localeCompare(
+          b.name,
+          "ru"
+        );
+      });
+  }
+
+  function cellForShift(emp, day, shiftName){
+    if(employeeHasDayOff(emp.id, day)){
+      return `<td class="off"></td>`;
+    }
+
+    const assignments =
+      getAssignmentsForShift(
+        emp.id,
+        day,
+        shiftName
+      );
+
+    if(!assignments.length){
+      return `<td></td>`;
+    }
+
+    /*
+      В одной смене может оказаться несколько
+      назначений сотрудника, поэтому выводим
+      их через перенос строки.
+    */
+    const text = assignments
+      .map(item => {
+        const category =
+          item.category || emp.position;
+
+        return `
+          ${shortName(emp.name)}
+          <br>
+          <span class="smallText">
+            ${category} · ${item.shift}
+          </span>
+        `;
+      })
+      .join("<hr>");
+
+    const changed = assignments.some(item =>
+      item.status === "changed" ||
+      item.bySkill ||
+      item.category !== emp.position ||
+      item.shift !== emp.defaultShift
+    );
+
+    return `
+      <td class="${changed ? "changed" : ""}">
+        ${text}
+      </td>
+    `;
+  }
+
+  function shiftTable(shiftName){
+    const employees =
+      getEmployeesForShift(shiftName);
+
+    return `
+      <table>
+        <tr class="titleRow">
+          <td colspan="10">
+            Филиал Сергели — ${shiftName}
+          </td>
+        </tr>
+
+        <tr class="dates">
+          <th>Основная должность</th>
+          <th>Основное время</th>
+          <th>ФИО</th>
+
+          ${days.map(day => `
+            <th>${formatDate(day)}</th>
+          `).join("")}
+        </tr>
+
+        <tr class="dates">
+          <th></th>
+          <th></th>
+          <th></th>
+
+          ${daysShort.map(dayName => `
+            <th>${dayName}</th>
+          `).join("")}
+        </tr>
+
+        ${employees.map(emp => `
+          <tr>
+            <td class="position">
+              ${emp.position}
+            </td>
+
+            <td class="time">
+              ${emp.defaultShift}
+            </td>
+
+            <td class="name">
+              ${shortName(emp.name)}
+            </td>
+
+            ${dayKeys.map(day =>
+              cellForShift(
+                emp,
+                day,
+                shiftName
+              )
+            ).join("")}
+          </tr>
+        `).join("")}
+      </table>
+
+      <br>
+    `;
+  }
+
+  let html = `
+    <html>
+    <head>
+      <meta charset="UTF-8">
+
+      <style>
+        body {
+          font-family: "Times New Roman", serif;
+        }
+
+        table {
+          border-collapse: collapse;
+          width: 100%;
+          margin-bottom: 24px;
+          page-break-after: always;
+        }
+
+        th,
+        td {
+          border: 1px solid #333;
+          text-align: center;
+          vertical-align: middle;
+          height: 30px;
+          font-size: 11px;
+          padding: 4px;
+        }
+
+        .titleRow td {
+          height: 46px;
+          font-size: 18px;
+          font-weight: bold;
+          background: #ffffff;
+        }
+
+        .dates th {
+          background: #92d050;
+          font-weight: bold;
+        }
+
+        .position {
+          background: #92d050;
+          font-weight: bold;
+          width: 120px;
+        }
+
+        .time {
+          background: #e2f0d9;
+          font-weight: bold;
+          width: 100px;
+        }
+
+        .name {
+          width: 180px;
+          font-weight: bold;
+        }
+
+        .off {
+          background: #ff0000;
+          color: #ff0000;
+        }
+
+        .changed {
+          background: #ffff00;
+          color: #000000;
+          font-weight: bold;
+        }
+
+        .smallText {
+          font-size: 9px;
+          font-weight: normal;
+        }
+
+        hr {
+          border: 0;
+          border-top: 1px solid #999;
+          margin: 3px 0;
+        }
+      </style>
+    </head>
+
+    <body>
+      <h2 style="text-align:center;">
+        График по сменам
+        ${weekLabel(state.currentWeek)}
+      </h2>
+
+      <p style="
+        text-align:right;
+        font-weight:bold;
+      ">
+        Аюпов А __________
+      </p>
+  `;
+
+  Object.keys(staffingBlocks).forEach(
+    shiftName => {
+      html += shiftTable(shiftName);
+    }
+  );
+
+  html += `
+    </body>
+    </html>
+  `;
+
+  const blob = new Blob(
+    [html],
+    {
+      type:
+        "application/vnd.ms-excel;charset=utf-8"
+    }
+  );
+
+  const link =
+    document.createElement("a");
+
+  link.href =
+    URL.createObjectURL(blob);
+
+  link.download =
+    `grafik_po_smenam_${weekLabel(state.currentWeek)}.xls`;
+
+  link.click();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(link.href);
+  }, 1000);
+}
+
 function toast(msg){ const t=document.getElementById("toast"); if(!t) return; t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2500); }
 
 const navButtons = document.querySelectorAll(".nav");
@@ -1987,6 +2304,13 @@ const prevWeekBtn = document.getElementById("prevWeekBtn");
 if(prevWeekBtn) prevWeekBtn.onclick=prevWeek;
 const excelBtn = document.getElementById("excelBtn");
 if(excelBtn) excelBtn.onclick=exportExcel;
+const excelShiftBtn =
+  document.getElementById("excelShiftBtn");
+
+if(excelShiftBtn){
+  excelShiftBtn.onclick =
+    exportExcelByShifts;
+}
 
 render({ save:false });
 setTimeout(startFirebaseSync, 200);
