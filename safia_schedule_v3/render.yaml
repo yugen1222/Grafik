@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: safia-schedule-v3
-    env: node
-    plan: free
-    buildCommand: npm install
-    startCommand: npm start
