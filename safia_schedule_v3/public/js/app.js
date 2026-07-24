@@ -1371,6 +1371,17 @@ function openEmployeeDrawer(day, empId, category = "", shift = ""){
         >
           Изменить
         </button>
+        <button
+          class="secondary"
+          onclick="
+            addSecondAssignmentFromDrawer(
+              '${day}',
+              '${empId}'
+             )
+           "
+         >
+         + Добавить ещё одну смену
+        </button>
 
         <button
           class="secondary"
@@ -1510,6 +1521,99 @@ function changeFromDrawer(day, empId, oldCategory = "", oldShift = ""){
   closeDrawer();
   render();
   toast("Изменение сохранено");
+}
+function addSecondAssignmentFromDrawer(day, empId){
+  const emp = employee(empId);
+
+  if(!emp){
+    return toast("Сотрудник не найден");
+  }
+
+  const newCategory =
+    document.getElementById("drawerCategory")?.value ||
+    emp.position;
+
+  const newShift =
+    document.getElementById("drawerShift")?.value ||
+    emp.defaultShift;
+
+  if(!canWorkCategory(emp, newCategory)){
+    return toast("У сотрудника нет навыка для этой должности");
+  }
+
+  if(!shiftTemplates[newShift]){
+    return toast("Неизвестная смена");
+  }
+
+  /*
+    Запрещаем полностью одинаковое назначение.
+  */
+  const duplicate = dayItems(day).some(item =>
+    item.employeeId === empId &&
+    item.category === newCategory &&
+    item.shift === newShift &&
+    isWorkItem(item)
+  );
+
+  if(duplicate){
+    return toast("Эта смена уже добавлена сотруднику");
+  }
+
+  /*
+    Запрещаем пересечение времени.
+    Например, 08:00–20:00 и 16:00–23:00 пересекаются.
+  */
+  if(hasTimeConflict(day, empId, newShift)){
+    return toast("Нельзя: это время пересекается с другой сменой сотрудника");
+  }
+
+  const currentHours =
+    totalHoursForEmployee(day, empId);
+
+  const addedHours =
+    shiftTemplates[newShift]?.hours || 0;
+
+  const totalHours =
+    currentHours + addedHours;
+
+  if(totalHours > 17){
+    return toast(
+      `Нельзя: получится ${totalHours} часов. Максимум 17 часов`
+    );
+  }
+
+  /*
+    Если у сотрудника стоял выходной,
+    при добавлении работы выходной снимается.
+  */
+  removeOffForEmployee(day, empId);
+
+  const bySkill =
+    newCategory !== emp.position;
+
+  state.weeks[state.currentWeek].schedule[day].push({
+    employeeId: empId,
+    category: newCategory,
+    shift: newShift,
+    status:
+      bySkill || newShift !== emp.defaultShift
+        ? "changed"
+        : "work",
+    bySkill,
+    additionalShift: true
+  });
+
+  state.weeks[state.currentWeek].history.push(
+    `${shortName(emp.name)}: добавлена вторая смена ` +
+    `${newCategory}, ${newShift}, ${day}`
+  );
+
+  closeDrawer();
+  render();
+
+  toast(
+    `Добавлена ещё одна смена. Всего за день: ${totalHours} часов`
+  );
 }
 function makeOffFromDrawer(day, empId){
   state.weeks[state.currentWeek].schedule[day]=dayItems(day).filter(i=>i.employeeId!==empId);
