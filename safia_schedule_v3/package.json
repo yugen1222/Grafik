@@ -1,0 +1,16 @@
+{
+  "name": "safia-schedule-v3",
+  "version": "13.0.0",
+  "description": "Safia Schedule v13 Stable - cloud-first staff scheduling system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
